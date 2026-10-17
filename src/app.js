@@ -1,0 +1,374 @@
+// -----------------------------------------------------------------------------
+// The integration itself: detection of the YouLess, its device, the reads
+// (every 10 s, the indexes published once a minute), the plausibility of the
+// billed index, the retries of an unreachable device and the test button.
+// index.js only wires the SDK handlers to it.
+// -----------------------------------------------------------------------------
+
+import { createLogger } from '@gladysassistant/integration-sdk';
+import { normalizeConfig } from './config.js';
+import {
+  AUTH_RETRY,
+  INDEX_INTERVAL,
+  POWER_INTERVAL,
+  RETRY_MAX,
+  RETRY_MIN,
+  STATE_HEARTBEAT,
+  TEST_ANSWER_WITHIN,
+} from './constants.js';
+import { FEATURE, buildDevice, ids, indexStates, liveStates } from './devices.js';
+import { IndexGuard } from './guard.js';
+import { T } from './i18n.js';
+import { YoulessClient } from './youless/client.js';
+import { bringsNew, capabilitiesOf, mergeCapabilities } from './youless/model.js';
+
+const defaultTimers = { setTimeout, clearTimeout, setInterval, clearInterval };
+/** Errors only the user can solve (a password): slow retries, their own message. */
+const PASSWORD_ERRORS = new Set(['auth', 'protected']);
+
+/** The index Gladys already holds for a feature of a created device, when it says so. */
+function lastValueOf(device, featureId) {
+  const feature = (device?.features ?? []).find((f) => f.external_id === featureId);
+  const value = Number(feature?.last_value);
+  const at = Date.parse(feature?.last_value_changed ?? '');
+  return feature?.last_value !== null &&
+    feature?.last_value !== undefined &&
+    Number.isFinite(value) &&
+    Number.isFinite(at)
+    ? { value, at }
+    : undefined;
+}
+
+export class YoulessApp {
+  constructor({
+    gladys,
+    logger = createLogger({ name: 'youless' }),
+    now = Date.now,
+    timers = defaultTimers,
+    clientFactory = (options) => new YoulessClient(options),
+  }) {
+    this.gladys = gladys;
+    this.logger = logger;
+    this.now = now;
+    this.timers = timers;
+    this.clientFactory = clientFactory;
+    this.config = normalizeConfig();
+    this.client = undefined;
+    /** The detected device: { model, mac?, firmware?, endpoint, phases }. */
+    this.device = undefined;
+    /** What the device showed it gives (the features of its Gladys device). */
+    this.capabilities = undefined;
+    this.guard = undefined;
+    this.lastIndexAt = 0;
+    /** Retries: kept across reconnections to Gladys, reset by a save of the form. */
+    this.failures = 0;
+    this.nextTryAt = 0;
+    this.phasesFailing = false;
+    this.createdDevices = new Map();
+    this.timer = undefined;
+    this.busy = undefined;
+    this.firstRun = Promise.resolve();
+    this.lastStatus = undefined;
+    this.generation = 0;
+    this.lifecycle = Promise.resolve();
+  }
+
+  // --- Lifecycle -------------------------------------------------------------
+
+  /** `fresh`: the user saved the form (not a reconnection): the retry delay ends. */
+  start(raw = {}, { fresh = false } = {}) {
+    return this.serialize(() => this.doStart(raw, { fresh }));
+  }
+
+  stop() {
+    return this.serialize(() => this.doStop());
+  }
+
+  /** Resolves once every queued start/stop and the first read after it are done (tests). */
+  async idle() {
+    await this.lifecycle;
+    await this.firstRun;
+  }
+
+  serialize(job) {
+    const run = this.lifecycle.then(job, job);
+    this.lifecycle = run.catch(() => {});
+    return run;
+  }
+
+  async doStart(raw, { fresh = false } = {}) {
+    await this.doStop();
+    const generation = ++this.generation;
+    const config = normalizeConfig(raw);
+    const changed =
+      config.address !== this.config.address || config.password !== this.config.password;
+    this.config = config;
+    if (changed || !this.client) {
+      // Another device (or another password): nothing of the previous one is kept.
+      this.client = config.address
+        ? this.clientFactory({ address: config.address, password: config.password, now: this.now })
+        : undefined;
+      this.device = undefined;
+      this.capabilities = undefined;
+      this.guard = undefined;
+      this.failures = 0;
+      this.nextTryAt = 0;
+    }
+    if (fresh) {
+      this.failures = 0;
+      this.nextTryAt = 0;
+    }
+    if (!config.address) {
+      await this.setStatus(false, config.invalidAddress ? T.badAddress : T.noAddress);
+      return;
+    }
+    // Every start (a reconnection to Gladys included) publishes everything
+    // again: a restarted Gladys has lost the discovered list.
+    this.gladys.forgetPublishedStates();
+    this.lastIndexAt = 0;
+    await this.discover();
+    // Always armed, whatever the first read gives: never a dead integration.
+    this.timer = this.timers.setInterval(
+      () => this.run(generation, () => this.tick()),
+      POWER_INTERVAL,
+    );
+    // Not awaited: a start (a save of the form) answers at once.
+    this.firstRun = this.run(generation, () => this.tick());
+  }
+
+  async doStop() {
+    this.generation += 1;
+    if (this.timer !== undefined) {
+      this.timers.clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  /** Run a job of a generation: nothing after a restart. */
+  async run(generation, job) {
+    if (generation !== this.generation) {
+      return;
+    }
+    try {
+      await job();
+    } catch (err) {
+      this.logger.error(`YouLess: unexpected error (${err?.name ?? 'Error'})`);
+    }
+  }
+
+  async setStatus(connected, message) {
+    const key = JSON.stringify([connected, message ?? null]);
+    if (key === this.lastStatus) {
+      return;
+    }
+    this.lastStatus = key;
+    await this.gladys
+      .setConnectionStatus(connected, message)
+      .catch((err) => this.logger.warn(`setConnectionStatus failed: ${err.message}`));
+  }
+
+  // --- Devices ---------------------------------------------------------------------
+
+  externalIds() {
+    return ids(this.gladys, this.device, this.config.address);
+  }
+
+  async discover() {
+    if (!this.device || !this.capabilities) {
+      return;
+    }
+    await this.gladys
+      .publishDiscoveredDevices([
+        buildDevice(this.gladys, this.device, this.capabilities, this.config.address),
+      ])
+      .catch((err) => this.logger.warn(`Publishing the YouLess device failed: ${err.message}`));
+  }
+
+  /** The Discover tab asks: the known device, or a read now to find it. */
+  async scan() {
+    if (this.device && this.capabilities) {
+      await this.discover();
+    } else if (this.client) {
+      this.nextTryAt = 0;
+      await this.run(this.generation, () => this.tick());
+    }
+  }
+
+  /** The created Gladys device of the YouLess, undefined until the user creates it. */
+  createdDevice() {
+    if (!this.device) {
+      return undefined;
+    }
+    const id = this.externalIds().device;
+    return (
+      this.createdDevices.get(id) ?? (this.gladys.devices ?? []).find((d) => d.external_id === id)
+    );
+  }
+
+  async onDeviceCreated(device) {
+    if (!device?.external_id) {
+      return;
+    }
+    this.createdDevices.set(device.external_id, device);
+    if (this.device && device.external_id === this.externalIds().device) {
+      // Its values right away, the indexes included.
+      this.lastIndexAt = 0;
+      await this.run(this.generation, () => this.tick());
+    }
+  }
+
+  onDeviceDeleted(device) {
+    this.createdDevices.delete(device?.external_id);
+  }
+
+  // --- Reads -------------------------------------------------------------------------
+
+  /** One read; a read still running (a slow device) is never doubled. */
+  tick() {
+    if (!this.busy) {
+      this.busy = this.doTick().finally(() => {
+        this.busy = undefined;
+      });
+    }
+    return this.busy;
+  }
+
+  async doTick() {
+    const now = this.now();
+    if (!this.client || now < this.nextTryAt) {
+      return;
+    }
+    let snapshot;
+    try {
+      if (!this.device) {
+        this.device = await this.client.detect();
+        this.logger.info(`YouLess ${this.device.model} found`);
+      }
+      snapshot = await this.client.read(this.device);
+    } catch (err) {
+      await this.failed(err, now);
+      return;
+    }
+    this.failures = 0;
+    this.nextTryAt = 0;
+    const seen = capabilitiesOf(snapshot);
+    if (!this.capabilities || bringsNew(this.capabilities, seen)) {
+      this.capabilities = mergeCapabilities(this.capabilities, seen);
+      await this.discover();
+    }
+    this.followPhases(snapshot);
+    await this.publish(snapshot, now);
+    const created = this.createdDevice();
+    await this.setStatus(
+      true,
+      created
+        ? T.ok(this.device.model, this.config.address, this.phasesFailing)
+        : T.noDevice(this.device.model),
+    );
+  }
+
+  /** The phases page is secondary: its failure is logged once, the rest goes on. */
+  followPhases(snapshot) {
+    if (snapshot.phasesError && !this.phasesFailing) {
+      this.phasesFailing = true;
+      this.logger.warn(`YouLess phases page unavailable (${snapshot.phasesError.code ?? 'error'})`);
+    } else if (!snapshot.phasesError && this.phasesFailing) {
+      this.phasesFailing = false;
+      this.logger.info('YouLess phases page back');
+    }
+  }
+
+  async failed(err, now) {
+    const code = err?.code ?? 'error';
+    let wait;
+    let message;
+    if (PASSWORD_ERRORS.has(code)) {
+      wait = AUTH_RETRY;
+      message = code === 'auth' ? T.auth(wait) : T.protected(wait);
+    } else {
+      wait = Math.min(RETRY_MIN * 2 ** this.failures, RETRY_MAX);
+      this.failures += 1;
+      message = T.unreachable(this.config.address, err, wait);
+    }
+    this.nextTryAt = now + wait;
+    // Our own words only (YoulessError): never a text of the device, never the password.
+    this.logger.warn(`YouLess read failed: ${code}${err?.status ? ` ${err.status}` : ''}`);
+    await this.setStatus(false, message);
+  }
+
+  /** The states of a read: the live values every time, the indexes once a minute. */
+  async publish(snapshot, now) {
+    const created = this.createdDevice();
+    if (!created) {
+      return;
+    }
+    const external = this.externalIds();
+    const states = liveStates(external, snapshot);
+    if (now - this.lastIndexAt >= INDEX_INTERVAL) {
+      this.lastIndexAt = now;
+      this.guard ??= new IndexGuard(
+        lastValueOf(created, external.feature(FEATURE.CONSUMPTION_INDEX)),
+      );
+      const total = snapshot.consumption.total;
+      const plausible = total !== undefined && this.guard.accept(total, now);
+      if (total !== undefined && !plausible) {
+        this.logger.warn(
+          'YouLess consumption index held back: a drop or a jump, not confirmed yet',
+        );
+      }
+      states.push(...indexStates(external, snapshot, plausible ? total : undefined));
+    }
+    // Only the features the created device has (they are fixed at its creation).
+    const features = created.features ? new Set(created.features.map((f) => f.external_id)) : null;
+    const allowed = features
+      ? states.filter((s) => features.has(s.device_feature_external_id))
+      : states;
+    if (allowed.length === 0) {
+      return;
+    }
+    await this.gladys
+      .publishChangedStates(allowed, { heartbeat: STATE_HEARTBEAT })
+      .catch((err) => this.logger.warn(`Publishing the YouLess values failed: ${err.message}`));
+  }
+
+  // --- Configuration screen button --------------------------------------------------
+
+  messageOf(err) {
+    if (err?.code === 'auth') return T.auth(AUTH_RETRY);
+    if (err?.code === 'protected') return T.protected(AUTH_RETRY);
+    return T.unreachable(this.config.address, err, RETRY_MIN);
+  }
+
+  /** The test button: find the device and read it once. */
+  async testConnection() {
+    if (!this.client) {
+      return this.config.invalidAddress ? T.badAddress : T.noAddress;
+    }
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = this.timers.setTimeout(() => resolve(T.test.slow), TEST_ANSWER_WITHIN);
+    });
+    try {
+      return await Promise.race([this.check(), late]);
+    } finally {
+      this.timers.clearTimeout(timer);
+    }
+  }
+
+  async check() {
+    const client = this.client;
+    try {
+      const device = this.device ?? (await client.detect());
+      const snapshot = await client.read(device);
+      if (client === this.client) {
+        // A good answer ends the retry delay: the next tick reads (and finds) it.
+        this.device ??= device;
+        this.failures = 0;
+        this.nextTryAt = 0;
+      }
+      return T.test.ok(device.model, snapshot);
+    } catch (err) {
+      return this.messageOf(err);
+    }
+  }
+}

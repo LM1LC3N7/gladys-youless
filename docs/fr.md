@@ -1,67 +1,96 @@
-# Template de démonstration
+# YouLess pour Gladys Assistant
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Intégration **non officielle**, sans lien avec YouLess. Elle lit votre
+lecteur d'énergie **YouLess** (LS110, LS120, LS120 avec le firmware PVOutput)
+**directement sur votre réseau local**, sans cloud ni compte.
+
+> **Jamais testé sur un vrai YouLess.** L'intégration a été écrite d'après la
+> bibliothèque youless-api (utilisée par Home Assistant) et des réponses
+> simulées. Vos retours sur le forum Gladys sont les bienvenus.
 
 ## Ce que vous obtenez
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+Un appareil « YouLess LS110 » ou « YouLess LS120 », avec seulement ce que
+votre lecteur fournit :
 
-## Configuration
+| Valeur                                                   | Rythme       | Type dans Gladys                                 |
+| -------------------------------------------------------- | ------------ | ------------------------------------------------ |
+| Puissance (W)                                            | 10 s         | capteur d'énergie, puissance                     |
+| Index de consommation (kWh)                              | 1 min        | capteur d'énergie, **index** : suivi énergétique |
+| Index par tarif 1 / 2 (kWh, compteur P1)                 | 1 min        | capteurs simples                                 |
+| Index d'injection, total et par tarif (kWh, compteur P1) | 1 min        | capteurs simples, **jamais facturés**            |
+| Tarif en cours (1 ou 2)                                  | 1 min        | capteur simple                                   |
+| Puissance, tension, courant par phase                    | 10 s         | capteurs (firmware LS120 1.5 et plus)            |
+| Entrée S0 : puissance (W) et index (kWh)                 | 10 s / 1 min | capteurs simples                                 |
+| Gaz (m³), eau (m³)                                       | 1 min        | capteurs de volume, **hors suivi énergétique**   |
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+Le **suivi énergétique** de Gladys calcule lui-même la consommation par
+demi-heure et son coût à partir de l'index de consommation (avec un compteur
+P1 : tarif 1 + tarif 2, l'injection n'y est jamais retirée ni ajoutée).
+L'injection, le gaz et l'eau restent à part : Gladys facturerait le gaz au
+tarif de l'électricité, et l'injection serait comptée comme une
+consommation.
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+Avec un compteur P1, la puissance est la puissance **nette** : elle devient
+négative quand vous injectez.
 
-## Actions
+## Installation
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+1. Donnez au YouLess une **adresse IP fixe** dans votre box (un LS110 est
+   reconnu par son adresse : la changer crée un nouvel appareil).
+2. Dans Gladys, installez l'intégration YouLess depuis le store, ouvrez sa
+   configuration et saisissez l'**adresse** du YouLess (ex. `192.168.1.50`,
+   avec `:port` seulement s'il n'est pas 80).
+3. **Mot de passe** : seulement si la page web du YouLess est protégée. Il
+   est gardé par Gladys dans sa base (non chiffré), jamais réaffiché, et
+   envoyé seulement au YouLess, en HTTP simple sur votre réseau (l'appareil
+   ne connaît pas le HTTPS).
+4. Cliquez sur **Tester la connexion** : le modèle, la puissance et l'index
+   lus s'affichent.
+5. Dans l'onglet **Découverte**, créez l'appareil YouLess. Les valeurs
+   arrivent aussitôt.
 
-## Scènes
+## Détection du modèle
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+- la page `/d` répond (MAC, firmware) et `/e` donne les données Enelogic :
+  **LS120**, lu par `/e`, plus `/f` (phases) à partir du firmware 1.5 ;
+- `/d` répond mais pas `/e` : **LS120 firmware PVOutput**, lu par `/a?f=j` ;
+- pas de `/d` : **LS110**, lu par `/a?f=j`.
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+Un LS120 est reconnu par son adresse MAC ; un LS110 (sans MAC) par son
+adresse.
 
-## Tableau de bord
+## Bon à savoir
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+- **Appareil injoignable** : l'état de l'intégration le dit, et elle
+  réessaie après 10 s, puis 20 s, 40 s… jusqu'à 5 minutes, sans jamais se
+  bloquer. Enregistrer la configuration relance tout de suite.
+- **Mot de passe refusé** : un essai toutes les 5 minutes seulement.
+- **Page des phases** (`/f`) en panne : la puissance et les index continuent ;
+  l'état le signale.
+- **Index incohérent** (chute à 0, saut énorme) : il n'est pas envoyé à
+  Gladys tant qu'il n'a pas été relu 3 fois de suite, pour ne pas fausser la
+  consommation et le coût (un compteur remplacé finit donc par passer).
+- Le gaz et l'eau d'un relevé de plus de 26 h sont ignorés (le YouLess garde
+  sa dernière valeur quand le compteur ne répond plus).
+- Les valeurs inchangées ne sont renvoyées que toutes les 10 minutes ; à
+  chaque reconnexion à Gladys, l'appareil et toutes ses valeurs sont publiés
+  à nouveau.
+- Les caractéristiques de l'appareil sont figées à sa création : si une
+  valeur apparaît plus tard (premier relevé de gaz, par exemple), cliquez sur
+  « Mettre à jour » dans l'onglet Découverte.
 
-## Dépannage
+## Limites
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+- Un seul YouLess par installation de l'intégration.
+- Le mot de passe passe en clair sur le réseau local (contrainte de
+  l'appareil) ; la connexion par la page `/L?w=<mot de passe>` est supposée,
+  elle n'a pas été vérifiée sur un appareil protégé.
+- Les pics mensuels (`pp`, `pa`) du LS120 ne sont pas lus pour l'instant.
+
+## Crédits
+
+Logique de lecture portée de
+[youless-api](https://github.com/gjong/youless-python-bridge) (MIT, Gerben
+Jongerius), liste des valeurs inspirée de l'intégration YouLess de Home
+Assistant (Apache-2.0). Code de l'intégration sous licence Apache-2.0.
