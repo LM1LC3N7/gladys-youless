@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_BODY_BYTES, MODEL } from '../src/constants.js';
+import { AUTH_RETRY, MAX_BODY_BYTES, MODEL } from '../src/constants.js';
 import { YoulessClient, YoulessError } from '../src/youless/client.js';
 import { createFetch, refusedError, timeoutError } from './helpers/fakeFetch.js';
 import {
@@ -154,4 +154,52 @@ test('an answer larger than a YouLess sends is cut', async () => {
     assert.ok(err instanceof YoulessError);
     return err.code === 'too_large';
   });
+});
+
+test('a body cut while being read is a network error in our words', async () => {
+  const broken = () =>
+    new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(timeoutError());
+        },
+      }),
+    );
+  const { client: c } = client(ls110Routes({ '/a?f=j': broken }));
+  await assert.rejects(c.read({ endpoint: 'generic' }), (err) => {
+    assert.ok(err instanceof YoulessError);
+    return err.code === 'timeout';
+  });
+});
+
+test('/d or /e answering another status is an error, never a model guess', async () => {
+  const { client: c } = client(ls120Routes({ '/d': () => new Response('x', { status: 500 }) }));
+  await assert.rejects(c.detect(), (err) => err.code === 'http' && err.status === 500);
+  const { client: c2 } = client(ls120Routes({ '/e': () => new Response('x', { status: 503 }) }));
+  await assert.rejects(c2.detect(), (err) => err.code === 'http' && err.status === 503);
+  const { client: c3 } = client(ls120Routes({ '/e': () => new Response('x', { status: 404 }) }));
+  assert.equal((await c3.detect()).model, MODEL.LS120_PVOUTPUT);
+});
+
+test('the phases page refusing the password: paused, no login for it, the session kept', async () => {
+  let clock = NOW;
+  const routes = ls120Routes({
+    '/L': () => new Response('ok'),
+    '/f': () => new Response('no', { status: 403 }),
+  });
+  const { client: c, fake } = client(routes, { password: 'pw', now: () => clock });
+  const device = await c.detect();
+  const logins = () => fake.calls.filter((call) => call.path === '/L').length;
+  const before = logins();
+  const first = await c.read(device);
+  assert.equal(first.phasesError.code, 'auth');
+  assert.equal(first.power, 2382);
+  assert.equal(logins(), before, 'no login for the phases page');
+  assert.equal(c.loggedIn, true);
+  clock += 10_000;
+  await c.read(device);
+  assert.equal(fake.calls.filter((call) => call.path === '/f').length, 1, 'paused');
+  clock += AUTH_RETRY;
+  await c.read(device);
+  assert.equal(fake.calls.filter((call) => call.path === '/f').length, 2);
 });

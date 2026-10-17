@@ -63,6 +63,7 @@ async function setup({ config = CONFIG, routes = ls120Routes(), devices = [] } =
     clientFactory: (options) => new YoulessClient({ ...options, fetchImpl: fake.fetch }),
   });
   gladys.onDeviceCreated((device) => app.onDeviceCreated(device));
+  gladys.onDeviceUpdated((device) => app.onDeviceUpdated(device));
   gladys.onAction(ACTIONS.TEST, () => app.testConnection());
   /** The next 10-second tick. */
   const tick = async (ms = POWER_INTERVAL) => {
@@ -259,4 +260,129 @@ test('the device created later: its values are read at once', async () => {
   await gladys.fake.deviceCreated(createdLs120());
   assert.equal(gladys.fake.lastState(F('consumption_index')), 9194.193);
   assert.match(status(gladys).message.en, /Connected/);
+});
+
+// --- Review fixes ----------------------------------------------------------------
+
+const MINUTE = 60_000;
+const indexes = (gladys) => published(gladys, 'consumption_index').map((s) => s.state);
+
+test('a P1 outage of 10 minutes never bills the index (neither 0 nor net)', async () => {
+  const routes = ls120Routes();
+  const { app, gladys, tick } = await setup({ routes, devices: [createdLs120()] });
+  await app.start(CONFIG);
+  await app.idle();
+  routes['/e'] = () => json([{ ...ENELOGIC[0], p1: 0, p2: 0, n1: 0, n2: 0, net: 5000 }]);
+  for (let i = 0; i < 10; i += 1) {
+    await tick(MINUTE);
+  }
+  assert.match(status(gladys).message.fr, /compteur P1 ne donne pas d’index/);
+  routes['/e'] = () => json([{ ...ENELOGIC[0], p1: 4703.6 }]);
+  await tick(MINUTE);
+  assert.deepEqual(indexes(gladys), [9194.193, 9194.231]);
+  assert.doesNotMatch(status(gladys).message.fr, /P1/);
+});
+
+test('a jump up is held until the user saves the configuration, then counted once', async () => {
+  const routes = ls120Routes();
+  const { app, gladys, tick } = await setup({ routes, devices: [createdLs120()] });
+  await app.start(CONFIG);
+  await app.idle();
+  routes['/e'] = () => json([{ ...ENELOGIC[0], p1: 9703.562 }]);
+  for (let i = 0; i < 30; i += 1) {
+    await tick(MINUTE);
+  }
+  assert.deepEqual(indexes(gladys), [9194.193]);
+  assert.match(status(gladys).message.fr, /sauté de 9194.193 à 14194.193 kWh/);
+  assert.match(status(gladys).message.en, /save the configuration/);
+  await app.start(CONFIG, { fresh: true });
+  await app.idle();
+  assert.deepEqual(indexes(gladys), [9194.193, 14194.193]);
+  assert.doesNotMatch(status(gladys).message.fr, /sauté/);
+  // A simple reconnection never accepts a jump.
+  routes['/e'] = () => json([{ ...ENELOGIC[0], p1: 99703.562 }]);
+  await tick(MINUTE);
+  await app.start(CONFIG);
+  await app.idle();
+  assert.equal(indexes(gladys).at(-1), 14194.193);
+});
+
+test('after "Update" in Discovery, the new features get their values', async () => {
+  const gladys0 = createFakeGladys({ selector: SELECTOR });
+  const small = buildDevice(
+    gladys0,
+    { model: 'LS120', mac: '72b8ad14162e', firmware: '1.6.0-EL' },
+    { power: true, consumption: true },
+    ADDRESS,
+  );
+  const { app, gladys } = await setup({ devices: [small] });
+  await app.start(CONFIG);
+  await app.idle();
+  assert.equal(gladys.fake.lastState(F('gas')), undefined);
+  await gladys.fake.deviceUpdated(createdLs120());
+  assert.equal(gladys.fake.lastState(F('gas')), 1624.264);
+  assert.equal(gladys.fake.lastState(F('voltage_l2')), 240);
+});
+
+test('after a restart, the device published again never loses a feature', async () => {
+  const created = createdLs120();
+  const routes = ls120Routes({
+    '/e': () => json([{ ...ENELOGIC[0], gts: 2601010000, wts: 2601010000 }]),
+    '/f': () => new Response('x', { status: 500 }),
+  });
+  const { app, gladys } = await setup({ routes, devices: [created] });
+  await app.start(CONFIG);
+  await app.idle();
+  const keys = (d) => d.features.map((f) => f.external_id).sort();
+  assert.deepEqual(keys(gladys.fake.discoveredDevices[0]), keys(created));
+});
+
+test('detection: only a 404 of /d means LS110, only a 404 or non-Enelogic /e means PVOutput', async () => {
+  for (const [routes, pattern] of [
+    [ls120Routes({ '/d': () => new Response('busy', { status: 503 }) }), /erreur HTTP 503/],
+    [ls120Routes({ '/e': () => new Response('busy', { status: 500 }) }), /erreur HTTP 500/],
+  ]) {
+    const { app, gladys } = await setup({ routes });
+    await app.start(CONFIG);
+    await app.idle();
+    assert.equal(status(gladys).connected, false);
+    assert.match(status(gladys).message.fr, pattern);
+    assert.equal(gladys.fake.discoveredDevices.length, 0);
+  }
+});
+
+test('a created LS120 is never downgraded to an LS110 (another device) by a detection', async () => {
+  const { app, gladys, fake, tick } = await setup({
+    routes: ls110Routes(),
+    devices: [createdLs120()],
+  });
+  await app.start(CONFIG);
+  await app.idle();
+  assert.equal(status(gladys).connected, false);
+  assert.match(status(gladys).message.fr, /autre modèle/);
+  assert.equal(gladys.fake.discoveredDevices.length, 0);
+  assert.equal(gladys.fake.states.length, 0);
+  // Back to its LS120 answers: found again under its MAC.
+  Object.assign(fake.routes, ls120Routes());
+  await tick(RETRY_MIN);
+  assert.equal(status(gladys).connected, true);
+  assert.equal(gladys.fake.discoveredDevices[0].external_id, DEVICE);
+});
+
+test('answers that are not a YouLess one, repeated: the model is detected again', async () => {
+  const routes = ls120Routes();
+  const { app, fake, tick } = await setup({ routes, devices: [createdLs120()] });
+  await app.start(CONFIG);
+  await app.idle();
+  routes['/e'] = () => json({ hello: 'world' });
+  const detections = () => fake.calls.filter((c) => c.path === '/d').length;
+  assert.equal(detections(), 1);
+  let wait = RETRY_MIN;
+  for (let i = 0; i < 3; i += 1) {
+    await tick(wait);
+    wait *= 2;
+  }
+  routes['/e'] = () => json(ENELOGIC);
+  await tick(wait);
+  assert.equal(detections(), 2);
 });

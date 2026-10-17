@@ -16,6 +16,9 @@ meaning of the fields of each page (`cnt`, `pwr`, `cs0`, `ps0`, `p1`, `p2`,
 `n1`, `n2`, `net`, `gas`, `gts`, `wtr`, `wts`, and `tr`, `i1`..`i3`,
 `v1`..`v3`, `l1`..`l3` of `/f`), the comma decimals of `/a?f=j`, the stale gas
 and water readings, and the firmware (1.5) that brings the phases page.
+NOT ported: its authentication (HTTP Basic credentials); the login of a
+protected device through `/L?w=<password>` is this integration's own
+assumption.
 
 Its license, reproduced as it appears in the repository (commit d5a6726):
 

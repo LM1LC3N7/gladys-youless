@@ -51,10 +51,29 @@ export const T = {
     en: `YouLess ${model} found: create its device from the "Discover" tab to receive its values.`,
     fr: `YouLess ${model} trouvé : créez son appareil depuis l’onglet « Découverte » pour recevoir ses valeurs.`,
   }),
-  ok: (model, address, phasesFailed) => ({
-    en: `Connected to the YouLess ${model} (${address}).${phasesFailed ? ' The phases page does not answer: the other values go on.' : ''}`,
-    fr: `Connecté au YouLess ${model} (${address}).${phasesFailed ? ' La page des phases ne répond pas : les autres valeurs continuent.' : ''}`,
+  downgrade: (address, wait) => ({
+    en: `The YouLess at ${address} now answers like another model (or without its MAC address) than the created device: its values are paused so as not to create a second device nor change the billed index. New try in ${delay(wait).en}. If you replaced the YouLess, delete the old device.`,
+    fr: `Le YouLess à l’adresse ${address} répond maintenant comme un autre modèle (ou sans son adresse MAC) que l’appareil créé : ses valeurs sont suspendues pour ne pas créer un second appareil ni changer l’index facturé. Nouvel essai dans ${delay(wait).fr}. Si vous avez remplacé le YouLess, supprimez l’ancien appareil.`,
   }),
+  /** `notes`: { en, fr } texts added after the connection message. */
+  ok: (model, address, notes = []) => ({
+    en: [`Connected to the YouLess ${model} (${address}).`, ...notes.map((n) => n.en)].join(' '),
+    fr: [`Connecté au YouLess ${model} (${address}).`, ...notes.map((n) => n.fr)].join(' '),
+  }),
+  notes: {
+    phases: {
+      en: 'The phases page does not answer: the other values go on.',
+      fr: 'La page des phases ne répond pas : les autres valeurs continuent.',
+    },
+    p1Outage: {
+      en: 'The P1 meter gives no index right now: the consumption index waits for it.',
+      fr: 'Le compteur P1 ne donne pas d’index en ce moment : l’index de consommation l’attend.',
+    },
+    jump: ({ from, to }) => ({
+      en: `The consumption index jumped from ${from} to ${to} kWh: held back, not sent to the energy monitoring. If it is right, save the configuration of the integration to accept it (the difference is then counted once as consumption).`,
+      fr: `L’index de consommation a sauté de ${from} à ${to} kWh : retenu, non envoyé au suivi énergétique. S’il est juste, enregistrez la configuration de l’intégration pour l’accepter (la différence est alors comptée une fois comme consommation).`,
+    }),
+  },
   test: {
     ok: (model, snapshot) => {
       const power = snapshot.power === undefined ? '?' : `${snapshot.power} W`;

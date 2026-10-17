@@ -121,17 +121,23 @@ export function buildDevice(gladys, device, capabilities, address) {
   }
   if (caps.tariff) {
     features.push(
-      feature(external, FEATURE.TARIFF, 'Current tariff (1 or 2)', C.UNKNOWN, T.SENSOR.INTEGER, {
-        min: 1,
-        max: 2,
-      }),
+      feature(
+        external,
+        FEATURE.TARIFF,
+        'Current tariff (as the YouLess gives it)',
+        C.UNKNOWN,
+        T.SENSOR.INTEGER,
+        { min: 0, max: 2 },
+      ),
     );
   }
   for (let n = 1; n <= Math.min(3, caps.phases ?? 0); n += 1) {
     features.push(
+      // A value every 10 s: no history unless the user turns it on.
       plain(external, FEATURE.phasePower(n), `Power L${n} (W)`, {
         min: -100_000,
         max: 100_000,
+        keep_history: false,
       }),
       feature(
         external,
@@ -139,7 +145,7 @@ export function buildDevice(gladys, device, capabilities, address) {
         `Voltage L${n}`,
         C.ENERGY_SENSOR,
         T.ENERGY_SENSOR.VOLTAGE,
-        { unit: U.VOLT, max: 500 },
+        { unit: U.VOLT, max: 500, keep_history: false },
       ),
       feature(
         external,
@@ -147,7 +153,7 @@ export function buildDevice(gladys, device, capabilities, address) {
         `Current L${n}`,
         C.ENERGY_SENSOR,
         T.ENERGY_SENSOR.CURRENT,
-        { unit: U.AMPERE, max: 1000 },
+        { unit: U.AMPERE, max: 1000, keep_history: false },
       ),
     );
   }
@@ -184,7 +190,46 @@ export function buildDevice(gladys, device, capabilities, address) {
   };
 }
 
-const round = (value, digits) => Math.round(value * 10 ** digits) / 10 ** digits;
+/**
+ * The capabilities a CREATED device carries (its features): the device
+ * published again never has fewer features than the one the user created
+ * (a missing one would read as a change, and "Update" would drop its history).
+ */
+export function capabilitiesOfDevice(device) {
+  const keys = new Set(
+    (device?.features ?? []).map((f) => String(f.external_id).split(':').at(-1)),
+  );
+  if (keys.size === 0) {
+    return undefined;
+  }
+  let phases = 0;
+  for (const n of [1, 2, 3]) {
+    if (
+      [FEATURE.phasePower(n), FEATURE.phaseVoltage(n), FEATURE.phaseCurrent(n)].some((k) =>
+        keys.has(k),
+      )
+    ) {
+      phases = n;
+    }
+  }
+  return {
+    power: keys.has(FEATURE.POWER),
+    consumption: keys.has(FEATURE.CONSUMPTION_INDEX),
+    tariffs: keys.has(FEATURE.CONSUMPTION_T1) || keys.has(FEATURE.CONSUMPTION_T2),
+    injection: keys.has(FEATURE.INJECTION_INDEX),
+    s0: keys.has(FEATURE.S0_INDEX) || keys.has(FEATURE.S0_POWER),
+    gas: keys.has(FEATURE.GAS),
+    water: keys.has(FEATURE.WATER),
+    phases,
+    tariff: keys.has(FEATURE.TARIFF),
+  };
+}
+
+/** The value of a param of a device ('' when absent). */
+export const paramOf = (device, name) =>
+  String((device?.params ?? []).find((p) => p.name === name)?.value ?? '');
+
+export const round = (value, digits) => Math.round(value * 10 ** digits) / 10 ** digits;
 
 const state = (external, key, value, digits) =>
   value === undefined || value === null || !Number.isFinite(value)

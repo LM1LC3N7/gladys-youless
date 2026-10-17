@@ -3,23 +3,38 @@
 // (every 10 s, the indexes published once a minute), the plausibility of the
 // billed index, the retries of an unreachable device and the test button.
 // index.js only wires the SDK handlers to it.
+//
+// The created devices are read from `gladys.devices`, which the SDK keeps up
+// to date (connection, creation, update, deletion): never a copy of our own.
 // -----------------------------------------------------------------------------
 
 import { createLogger } from '@gladysassistant/integration-sdk';
 import { normalizeConfig } from './config.js';
 import {
   AUTH_RETRY,
+  EXTERNAL_ID_TYPE,
   INDEX_INTERVAL,
+  MODEL,
   POWER_INTERVAL,
+  REDETECT_AFTER,
   RETRY_MAX,
   RETRY_MIN,
   STATE_HEARTBEAT,
   TEST_ANSWER_WITHIN,
 } from './constants.js';
-import { FEATURE, buildDevice, ids, indexStates, liveStates } from './devices.js';
+import {
+  FEATURE,
+  buildDevice,
+  capabilitiesOfDevice,
+  ids,
+  indexStates,
+  liveStates,
+  paramOf,
+  round,
+} from './devices.js';
 import { IndexGuard } from './guard.js';
 import { T } from './i18n.js';
-import { YoulessClient } from './youless/client.js';
+import { YoulessClient, YoulessError } from './youless/client.js';
 import { bringsNew, capabilitiesOf, mergeCapabilities } from './youless/model.js';
 
 const defaultTimers = { setTimeout, clearTimeout, setInterval, clearInterval };
@@ -56,15 +71,16 @@ export class YoulessApp {
     this.client = undefined;
     /** The detected device: { model, mac?, firmware?, endpoint, phases }. */
     this.device = undefined;
-    /** What the device showed it gives (the features of its Gladys device). */
+    /** What the device showed it gives, and what its created device carries: only grows. */
     this.capabilities = undefined;
     this.guard = undefined;
     this.lastIndexAt = 0;
     /** Retries: kept across reconnections to Gladys, reset by a save of the form. */
     this.failures = 0;
     this.nextTryAt = 0;
+    this.unknownAnswers = 0;
     this.phasesFailing = false;
-    this.createdDevices = new Map();
+    this.p1Outage = false;
     this.timer = undefined;
     this.busy = undefined;
     this.firstRun = Promise.resolve();
@@ -75,7 +91,10 @@ export class YoulessApp {
 
   // --- Lifecycle -------------------------------------------------------------
 
-  /** `fresh`: the user saved the form (not a reconnection): the retry delay ends. */
+  /**
+   * `fresh`: the user saved the form (not a reconnection): the retry delay
+   * ends, and a consumption index jump held back is accepted (counted once).
+   */
   start(raw = {}, { fresh = false } = {}) {
     return this.serialize(() => this.doStart(raw, { fresh }));
   }
@@ -113,10 +132,15 @@ export class YoulessApp {
       this.guard = undefined;
       this.failures = 0;
       this.nextTryAt = 0;
+      this.unknownAnswers = 0;
     }
     if (fresh) {
       this.failures = 0;
       this.nextTryAt = 0;
+      if (this.guard?.jump) {
+        this.logger.info('YouLess consumption index jump accepted by a save of the configuration');
+        this.guard.acceptJump();
+      }
     }
     if (!config.address) {
       await this.setStatus(false, config.invalidAddress ? T.badAddress : T.noAddress);
@@ -173,6 +197,29 @@ export class YoulessApp {
     return ids(this.gladys, this.device, this.config.address);
   }
 
+  /** Every created device of this integration (the SDK keeps gladys.devices up to date). */
+  ourDevices() {
+    const prefix = this.gladys.externalId(`${EXTERNAL_ID_TYPE}:`);
+    return (this.gladys.devices ?? []).filter((d) => String(d.external_id).startsWith(prefix));
+  }
+
+  /** The created Gladys device of the YouLess, undefined until the user creates it. */
+  createdDevice() {
+    if (!this.device) {
+      return undefined;
+    }
+    const id = this.externalIds().device;
+    return (this.gladys.devices ?? []).find((d) => d.external_id === id);
+  }
+
+  /** The capabilities known so far, with the features of the created device (never fewer). */
+  knownCapabilities(seen) {
+    return mergeCapabilities(
+      mergeCapabilities(this.capabilities, capabilitiesOfDevice(this.createdDevice())),
+      seen,
+    );
+  }
+
   async discover() {
     if (!this.device || !this.capabilities) {
       return;
@@ -194,31 +241,42 @@ export class YoulessApp {
     }
   }
 
-  /** The created Gladys device of the YouLess, undefined until the user creates it. */
-  createdDevice() {
-    if (!this.device) {
-      return undefined;
-    }
-    const id = this.externalIds().device;
-    return (
-      this.createdDevices.get(id) ?? (this.gladys.devices ?? []).find((d) => d.external_id === id)
-    );
-  }
-
   async onDeviceCreated(device) {
-    if (!device?.external_id) {
-      return;
-    }
-    this.createdDevices.set(device.external_id, device);
-    if (this.device && device.external_id === this.externalIds().device) {
-      // Its values right away, the indexes included.
+    if (this.device && device?.external_id === this.externalIds().device) {
+      // A new device: no reference of the index yet, its values right away.
+      this.guard = undefined;
       this.lastIndexAt = 0;
       await this.run(this.generation, () => this.tick());
     }
   }
 
-  onDeviceDeleted(device) {
-    this.createdDevices.delete(device?.external_id);
+  async onDeviceUpdated(device) {
+    if (this.device && device?.external_id === this.externalIds().device) {
+      // New features (Update in Discovery): their values right away.
+      this.lastIndexAt = 0;
+      await this.run(this.generation, () => this.tick());
+    }
+  }
+
+  /**
+   * A detection never downgrades a created device known by its MAC: an LS120
+   * taken for an LS110 (another external id) or for the PVOutput firmware
+   * (another billed index) is a passing error, tried again.
+   */
+  checkDetection(detected) {
+    const known = this.ourDevices().find((d) => paramOf(d, 'mac'));
+    if (!known) {
+      return;
+    }
+    const mac = paramOf(known, 'mac');
+    const lostMac = !detected.mac;
+    const lostEnelogic =
+      detected.mac === mac &&
+      paramOf(known, 'model') === MODEL.LS120 &&
+      detected.model !== MODEL.LS120;
+    if (lostMac || lostEnelogic) {
+      throw new YoulessError('downgrade', `detected as ${detected.model}, created as LS120`);
+    }
   }
 
   // --- Reads -------------------------------------------------------------------------
@@ -241,30 +299,46 @@ export class YoulessApp {
     let snapshot;
     try {
       if (!this.device) {
-        this.device = await this.client.detect();
+        const detected = await this.client.detect();
+        this.checkDetection(detected);
+        this.device = detected;
         this.logger.info(`YouLess ${this.device.model} found`);
       }
-      snapshot = await this.client.read(this.device);
+      const p1Known = Boolean(this.knownCapabilities().tariffs);
+      snapshot = await this.client.read(this.device, { p1Known });
     } catch (err) {
+      if (err?.code === 'unknown_answer' && this.device) {
+        this.unknownAnswers += 1;
+        if (this.unknownAnswers >= REDETECT_AFTER) {
+          // The firmware may have changed: detected again (never downgraded).
+          this.unknownAnswers = 0;
+          this.device = undefined;
+        }
+      }
       await this.failed(err, now);
       return;
     }
     this.failures = 0;
     this.nextTryAt = 0;
-    const seen = capabilitiesOf(snapshot);
-    if (!this.capabilities || bringsNew(this.capabilities, seen)) {
-      this.capabilities = mergeCapabilities(this.capabilities, seen);
+    this.unknownAnswers = 0;
+    const target = this.knownCapabilities(capabilitiesOf(snapshot));
+    if (!this.capabilities || bringsNew(this.capabilities, target)) {
+      this.capabilities = target;
       await this.discover();
     }
     this.followPhases(snapshot);
+    this.p1Outage = Boolean(snapshot.p1Outage);
     await this.publish(snapshot, now);
     const created = this.createdDevice();
-    await this.setStatus(
-      true,
-      created
-        ? T.ok(this.device.model, this.config.address, this.phasesFailing)
-        : T.noDevice(this.device.model),
-    );
+    await this.setStatus(true, created ? this.okMessage() : T.noDevice(this.device.model));
+  }
+
+  okMessage() {
+    const notes = [];
+    if (this.phasesFailing) notes.push(T.notes.phases);
+    if (this.p1Outage) notes.push(T.notes.p1Outage);
+    if (this.guard?.jump) notes.push(T.notes.jump(this.guard.jump));
+    return T.ok(this.device.model, this.config.address, notes);
   }
 
   /** The phases page is secondary: its failure is logged once, the rest goes on. */
@@ -288,7 +362,10 @@ export class YoulessApp {
     } else {
       wait = Math.min(RETRY_MIN * 2 ** this.failures, RETRY_MAX);
       this.failures += 1;
-      message = T.unreachable(this.config.address, err, wait);
+      message =
+        code === 'downgrade'
+          ? T.downgrade(this.config.address, wait)
+          : T.unreachable(this.config.address, err, wait);
     }
     this.nextTryAt = now + wait;
     // Our own words only (YoulessError): never a text of the device, never the password.
@@ -309,11 +386,15 @@ export class YoulessApp {
       this.guard ??= new IndexGuard(
         lastValueOf(created, external.feature(FEATURE.CONSUMPTION_INDEX)),
       );
-      const total = snapshot.consumption.total;
+      // The value Gladys will hold (3 decimals) is the one the guard checks.
+      const total =
+        snapshot.consumption.total === undefined ? undefined : round(snapshot.consumption.total, 3);
       const plausible = total !== undefined && this.guard.accept(total, now);
       if (total !== undefined && !plausible) {
         this.logger.warn(
-          'YouLess consumption index held back: a drop or a jump, not confirmed yet',
+          this.guard.jump
+            ? 'YouLess consumption index jump held back: save the configuration to accept it'
+            : 'YouLess consumption index held back: a drop or a 0, not confirmed',
         );
       }
       states.push(...indexStates(external, snapshot, plausible ? total : undefined));
@@ -336,6 +417,7 @@ export class YoulessApp {
   messageOf(err) {
     if (err?.code === 'auth') return T.auth(AUTH_RETRY);
     if (err?.code === 'protected') return T.protected(AUTH_RETRY);
+    if (err?.code === 'downgrade') return T.downgrade(this.config.address, RETRY_MIN);
     return T.unreachable(this.config.address, err, RETRY_MIN);
   }
 
@@ -358,8 +440,14 @@ export class YoulessApp {
   async check() {
     const client = this.client;
     try {
-      const device = this.device ?? (await client.detect());
-      const snapshot = await client.read(device);
+      let device = this.device;
+      if (!device) {
+        device = await client.detect();
+        this.checkDetection(device);
+      }
+      const snapshot = await client.read(device, {
+        p1Known: Boolean(this.knownCapabilities().tariffs),
+      });
       if (client === this.client) {
         // A good answer ends the retry delay: the next tick reads (and finds) it.
         this.device ??= device;

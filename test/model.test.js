@@ -12,7 +12,7 @@ import {
   DEVICE_FEATURE_UNITS as U,
 } from '@gladysassistant/integration-sdk';
 import { parseAddress, normalizeConfig } from '../src/config.js';
-import { INDEX_CONFIRMATIONS } from '../src/constants.js';
+import { INDEX_DROP_CONFIRM } from '../src/constants.js';
 import { FEATURE, buildDevice, indexStates, liveStates, ids } from '../src/devices.js';
 import { IndexGuard } from '../src/guard.js';
 import {
@@ -132,6 +132,20 @@ test('/f: three phases and the tariff', () => {
   assert.equal(p.phases.length, 3);
   assert.deepEqual(parsePhases({ tr: 2, i1: 1, v1: 230, l1: 100 }).phases.length, 1);
   assert.equal(parsePhases({ tr: 7 }).tariff, undefined);
+  // youless-api says 0 or 1, Home Assistant 1 or 2: kept as given.
+  assert.equal(parsePhases({ tr: 0 }).tariff, 0);
+});
+
+test('/e: once P1 was seen, a read without P1 gives no index at all (never net, never 0)', () => {
+  const outage = [{ ...ENELOGIC[0], p1: 0, p2: 0, n1: 0, n2: 0, net: 5000 }];
+  const known = parseEnelogic(outage, NOW, { p1Known: true });
+  assert.equal(known.consumption.total, undefined);
+  assert.equal(known.injection.total, undefined);
+  assert.equal(known.p1Outage, true);
+  const missing = parseEnelogic([{ pwr: 0 }], NOW, { p1Known: true });
+  assert.equal(missing.consumption.total, undefined);
+  // Never seen: a meter without P1, read through net.
+  assert.equal(parseEnelogic(outage, NOW).consumption.total, 5000);
 });
 
 test('capabilities only grow', () => {
@@ -145,28 +159,59 @@ test('capabilities only grow', () => {
   assert.equal(bringsNew(undefined, a), true);
 });
 
-test('index guard: a drop or a jump waits for confirmation, a normal rise goes through', () => {
+test('index guard: never 0, a normal rise goes through', () => {
   const guard = new IndexGuard();
+  assert.equal(guard.accept(0, 0), false, 'never 0, even as the first reference');
   assert.equal(guard.accept(1000, 0), true);
   assert.equal(guard.accept(1000.2, MINUTE), true);
-  // A glitch to 0, then back: never published, so never a reset nor a jump in Gladys.
-  assert.equal(guard.accept(0, 2 * MINUTE), false);
-  assert.equal(guard.accept(1000.3, 3 * MINUTE), true);
-  // A jump of 5,000 kWh in one minute: held back, then taken once confirmed.
-  let t = 4 * MINUTE;
-  for (let i = 1; i < INDEX_CONFIRMATIONS; i += 1) {
-    assert.equal(guard.accept(6000 + i * 0.01, t), false);
-    t += MINUTE;
+  // A glitch to 0, for as long as it lasts: never published.
+  for (let i = 2; i < 200; i += 1) {
+    assert.equal(guard.accept(0, i * MINUTE), false);
   }
-  assert.equal(guard.accept(6000 + INDEX_CONFIRMATIONS * 0.01, t), true);
-  // A new meter (lower count) read again and again is taken too.
-  const replaced = new IndexGuard({ value: 50_000, at: 0 });
-  const results = [1, 2, 3].map((i) => replaced.accept(10 + i * 0.01, i * MINUTE));
-  assert.deepEqual(results, [false, false, true]);
+  assert.equal(guard.accept(1000.3, 200 * MINUTE), true);
   assert.equal(new IndexGuard().accept(-1, 0), false);
   assert.equal(new IndexGuard().accept(NaN, 0), false);
   // After a long stop, a big but plausible rise goes through.
   assert.equal(new IndexGuard({ value: 100, at: 0 }).accept(400, 24 * 60 * MINUTE), true);
+});
+
+test('index guard: a jump up is never confirmed by repetition, only by the user', () => {
+  const guard = new IndexGuard({ value: 1000, at: 0 });
+  for (let i = 1; i <= 500; i += 1) {
+    assert.equal(guard.accept(6000 + i * 0.01, i * MINUTE), false);
+  }
+  assert.deepEqual(guard.jump, { from: 1000, to: 6005 });
+  guard.acceptJump();
+  assert.equal(guard.accept(6005.01, 501 * MINUTE), true);
+  assert.equal(guard.jump, undefined);
+  // Back to normal values: the jump is forgotten, nothing to accept.
+  const back = new IndexGuard({ value: 1000, at: 0 });
+  back.accept(9000, MINUTE);
+  assert.equal(back.accept(1000.1, 2 * MINUTE), true);
+  assert.equal(back.jump, undefined);
+  back.acceptJump();
+  assert.equal(back.accept(9000, 3 * MINUTE), false, 'an old acceptance never covers a new jump');
+});
+
+test('index guard: a drop needs non-zero, non-decreasing values over the confirmation time', () => {
+  const replaced = new IndexGuard({ value: 50_000, at: 0 });
+  const minutes = INDEX_DROP_CONFIRM / MINUTE;
+  for (let i = 1; i <= minutes; i += 1) {
+    assert.equal(replaced.accept(10 + i * 0.01, i * MINUTE), false, `minute ${i}`);
+  }
+  assert.equal(replaced.accept(10 + (minutes + 1) * 0.01, (minutes + 1) * MINUTE), true);
+  // A 0 or a lower value restarts the confirmation.
+  const glitchy = new IndexGuard({ value: 50_000, at: 0 });
+  let t = 0;
+  for (let i = 0; i < minutes; i += 1) {
+    t += MINUTE;
+    glitchy.accept(10, t);
+  }
+  glitchy.accept(0, (t += MINUTE));
+  assert.equal(glitchy.accept(10, (t += MINUTE)), false);
+  glitchy.accept(9, (t += MINUTE));
+  assert.equal(glitchy.accept(9, t + minutes * MINUTE - MINUTE), false);
+  assert.equal(glitchy.accept(9, t + minutes * MINUTE), true);
 });
 
 test('the device: one index in the energy monitoring, everything else plain or volume', () => {

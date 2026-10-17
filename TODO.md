@@ -20,8 +20,15 @@
 - [ ] The pages without `?f=j`: `/d`, `/e`, `/f` as youless-api reads them
       (the brief mentions `/d?f=j` and `/e?f=j`; youless-api, used by Home
       Assistant, calls them without the query).
-- [ ] The answer of an LS110 to `/d` (404 or a web page assumed) and of the
-      PVOutput firmware to `/e`.
+- [ ] The answer of an LS110 to `/d` (404 required now: any other answer is
+      a passing error) and of the PVOutput firmware to `/e` (404 or a 200
+      without Enelogic data required).
+- [ ] The values of `tr` in `/f`: 0/1 (youless-api comment) or 1/2 (Home
+      Assistant options); published as given, 0 to 2 accepted.
+- [ ] What `/e` gives during a P1 outage (p1..n2 at 0, absent?): no index is
+      published then, once P1 values were seen.
+- [ ] The phases page with a password: whether it shares the session of
+      `/e` (a refusal pauses it for 5 minutes, without a new login).
 - [ ] An LS120 without P1 (optical sensor): `p1`, `p2`, `n1`, `n2` at 0 and
       `net` as the meter count (assumed).
 - [ ] The sign of `pwr` with a P1 meter while injecting (negative assumed),
@@ -51,9 +58,20 @@
 - **Paths**: `/d`, `/e`, `/f` without `?f=j` and `/a?f=j`, exactly as
   youless-api (the brief mentioned `?f=j` on every page; the library that
   Home Assistant users run every day was preferred).
-- **Detection**: a network error (timeout, refused) never means "LS110": only
-  a `/d` that answers without a device page does. A `/d` without a usable MAC
-  still means LS120 (youless-api reads `/e` then).
+- **Detection** (review): stricter than youless-api, which takes any non-ok
+  `/d` for an LS110 and any non-JSON `/e` for PVOutput. Here only a 404 of
+  `/d` means LS110, only a 404 or a 200 without Enelogic data of `/e` means
+  PVOutput; any other status, a web page on `/d` (password) and every network
+  error are passing errors, retried with the growing delay. A `/d` without a
+  usable MAC still means LS120 (youless-api reads `/e` then). A detection
+  never downgrades a created device carrying a MAC (`mac` param): no MAC
+  detected, or the same MAC detected as PVOutput while created as LS120 →
+  `downgrade` error, status message, retries (another MAC is a new device).
+  3 answers in a row that are not a YouLess one → detected again.
+- **Password not ported**: youless-api sends HTTP Basic credentials; the
+  `/L?w=<password>` login of the web page is our assumption (README, docs,
+  THIRD_PARTY_NOTICES say so). The phases page never logs in again by itself:
+  a refusal pauses it for AUTH_RETRY, the main session is kept.
 - **External id**: `youless:<MAC>` (lower-case, no separator); without a MAC
   (LS110), `youless:host-<address>`: the docs ask for a fixed address.
 - **One device per integration**: most homes have one meter; a list of
@@ -71,22 +89,40 @@
   for that category), never in the energy monitoring.
 - **Power**: `power` is the only `energy-sensor` / `power` feature (the
   energy contracts take the first one of the meter for its peaks); signed
-  (min -100,000 W) because a P1 YouLess gives the net power. The power of
-  each phase and of the S0 input are plain sensors; voltage and current per
-  phase are `energy-sensor` voltage / current, as in gladys-tibber.
+  (min -100,000 W) because a P1 YouLess is assumed to give the net power
+  (not verified). The power of each phase and of the S0 input are plain
+  sensors; voltage and current per phase are `energy-sensor` voltage /
+  current, as in gladys-tibber. The nine phase features have
+  `keep_history: false` (a value every 10 s; the user can turn it on).
+- **Tariff**: `tr` published as the device gives it (0, 1 or 2 accepted),
+  feature named "as the YouLess gives it" (sources disagree: 0/1 or 1/2).
 - **S0 input**: plain sensors, only once it holds something (`cs0` or `ps0`
   above 0): its meaning (solar production, a sub-meter) is unknown, so it
   never enters the energy monitoring.
 - **Gas, water present**: the feature is created once the value is above 0
   or stamped (`gts` / `wts`): an LS120 without a gas meter answers `gas: 0`.
-- **Capabilities**: from the reads, only growing (a new one publishes the
-  discovered device again; the user clicks Update). The states are filtered
-  on the features of the created device.
-- **Index plausibility** (`src/guard.js`): a value lower than the last one
-  published, or more than 100 kW on average since then (+ 0.5 kWh), waits
-  for 3 reads in a row; the last value Gladys holds (`last_value`,
-  `last_value_changed`) is the starting point after a restart. A meter set
-  again by hand in the YouLess therefore goes through after 3 minutes.
+- **Capabilities** (review): the reads plus the features of the created
+  device (`gladys.devices`, by external id), only growing: after a restart
+  with gas stale and `/f` down, the device published again is still the
+  created one (no `structure_changed`, no history lost by "Update"). The
+  states are filtered on the features of the created device.
+- **Created devices**: read from `gladys.devices` only (the SDK upserts it
+  on creation and update, removes it on deletion); no Map of our own.
+  `onDeviceUpdated` publishes the values of the new features at once.
+- **Index plausibility** (review, `src/guard.js`): the core skips a negative
+  delta but counts every rise in full, so 9,194 → 0 → 9,194 would bill
+  9,194 kWh. Rules: (a) once P1 values were seen (read, or the tariff
+  features of the created device), a read without them gives no index at
+  all, never `net`; (b) 0 is never published, not even as a first reference;
+  (c) a drop is taken only after 60 min of non-zero, non-decreasing values
+  (a 0 or a lower value restarts the wait); (d) a jump over 100 kW on average
+  (+ 0.5 kWh) is never confirmed by repetition: held, shown in the status
+  (fr/en), accepted only by an explicit gesture, a save of the configuration
+  (`start(…, { fresh: true })`): the current index is then published and the
+  difference counted once (documented); a reconnection never accepts it;
+  (e) the guard starts again at `onDeviceCreated`. The value checked is the
+  one published (3 decimals). After a restart, the last value Gladys holds
+  (`last_value`, `last_value_changed`) is the reference.
 - **Pace**: one timer every 10 s; the indexes (and gas, water, tariff, S0
   index) are published when 60 s have passed; `publishChangedStates` with a
   10-minute heartbeat. At most about 70 states a minute with three phases,

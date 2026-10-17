@@ -19,13 +19,18 @@ Gladys ⇄ SDK ⇄ src/app.js (YoulessApp)
                  └─ src/devices.js         the device, its features and states (pure)
 ```
 
-- **Detection** (as youless-api): `/d` answers → `/e` Enelogic JSON → LS120
-  (plus `/f` from firmware 1.5); `/d` without `/e` → LS120 PVOutput, read
-  through `/a?f=j`; no `/d` → LS110, `/a?f=j`. A network failure is never
-  taken for an LS110.
+- **Detection** (after youless-api, stricter): `/d` device page → `/e`
+  Enelogic JSON → LS120 (plus `/f` from firmware 1.5); `/e` 404 or a 200
+  without Enelogic data → LS120 PVOutput, read through `/a?f=j`; `/d` 404 →
+  LS110, `/a?f=j`. Any other status and every network failure is a passing
+  error, never a model guess. A created device known by its MAC is never
+  downgraded (to an LS110 or to PVOutput); answers that are not a YouLess one,
+  3 times in a row, trigger a new detection.
 - **One device**, external id `youless:<MAC>` (`youless:host-<address>` for
-  an LS110, which has no MAC). Its features follow what the device showed
-  (they only grow; a new one republishes the discovered device).
+  an LS110, which has no MAC). Its features are what the device showed plus
+  what the created device carries (from `gladys.devices`): the published
+  device never shrinks. Created and updated devices are read from
+  `gladys.devices`, which the SDK keeps up to date.
 - **Energy**: `consumption_index` (energy-sensor / index, kWh) is the only
   energy index; the core derives the consumption and cost from it. With a P1
   meter it is p1 + p2 (never `net`). Tariff and injection indexes are plain
@@ -35,9 +40,12 @@ Gladys ⇄ SDK ⇄ src/app.js (YoulessApp)
 - **Pace**: one read every 10 s (power, phases, S0 power); the indexes are
   published once a minute; `publishChangedStates` with a 10-minute heartbeat.
   The phases page is secondary: its failure never holds back the rest.
-- **Index plausibility**: a drop or a jump over 100 kW on average is held
-  back until read 3 times in a row (a glitch to 0 would otherwise count as a
-  reset, then the whole index as one half hour).
+- **Index plausibility** (`src/guard.js`; the core skips a negative delta
+  but counts every rise in full): never 0; once P1 values were seen, a read
+  without them gives no index (never `net`); a drop is taken after 60 min of
+  non-zero, non-decreasing values; a jump over 100 kW on average is never
+  confirmed by repetition: held, shown in the status, accepted only when the
+  user saves the configuration (the difference counted once).
 - **Errors**: unreachable → retries after 10 s, doubled up to 5 min; refused
   password → every 5 min; a reconnection to Gladys keeps the delay, a save of
   the form ends it. Errors are logged with our own codes, never a text of the

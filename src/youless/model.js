@@ -125,8 +125,12 @@ export function parseGeneric(json) {
  * kept apart; `net` (p1 + p2 - n1 - n2) is never the consumption index then.
  * Without P1 (an optical sensor on the meter), the tariff fields stay at 0 and
  * `net` is the meter count.
+ *
+ * `p1Known`: this device has shown P1 values before. A read without them is
+ * then a P1 outage, never a meter without P1: no consumption index at all
+ * (falling back on `net`, or on 0, would bill the whole index once P1 is back).
  */
-export function parseEnelogic(json, now) {
+export function parseEnelogic(json, now, { p1Known = false } = {}) {
   const entry = Array.isArray(json) ? json[0] : undefined;
   if (!isObject(entry)) {
     return undefined;
@@ -147,6 +151,9 @@ export function parseEnelogic(json, now) {
   if (p1Meter) {
     snapshot.consumption = { total: sum(p1, p2), t1: p1, t2: p2 };
     snapshot.injection = { total: sum(n1, n2), t1: n1, t2: n2 };
+  } else if (p1Known) {
+    snapshot.p1Outage = true;
+    return snapshot;
   } else {
     snapshot.consumption = { total: num(entry.net) };
   }
@@ -174,7 +181,8 @@ export function parsePhases(json) {
     });
   }
   const tariff = num(json.tr);
-  return { phases, tariff: tariff === 1 || tariff === 2 ? tariff : undefined };
+  // youless-api says 0 or 1, Home Assistant shows 1 or 2: kept as the device gives it.
+  return { phases, tariff: [0, 1, 2].includes(tariff) ? tariff : undefined };
 }
 
 const has = (value) => value !== undefined;

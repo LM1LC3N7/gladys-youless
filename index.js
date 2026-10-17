@@ -17,7 +17,8 @@ const app = new YoulessApp({ gladys });
 gladys.onScanRequest(() => app.scan());
 // The device just created: its values are read now, not at the next tick.
 gladys.onDeviceCreated((device) => app.onDeviceCreated(device));
-gladys.onDeviceDeleted((device) => app.onDeviceDeleted(device));
+// Updated from Discovery: the new features get their values now.
+gladys.onDeviceUpdated((device) => app.onDeviceUpdated(device));
 
 // --- Configuration screen button ----------------------------------------------
 gladys.onAction(ACTIONS.TEST, () => app.testConnection());

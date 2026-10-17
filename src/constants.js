@@ -60,8 +60,13 @@ export const TEST_ANSWER_WITHIN = 25 * SECOND;
 export const INDEX_MAX_KW = 100;
 /** kWh always accepted on top of INDEX_MAX_KW × hours (rounding, a late read). */
 export const INDEX_SLACK_KWH = 0.5;
-/** A drop or a jump is taken only once read this many times in a row. */
-export const INDEX_CONFIRMATIONS = 3;
+/**
+ * A drop is taken only once lower values (never 0, never decreasing) have
+ * been read for this long. A jump up is never taken without the user.
+ */
+export const INDEX_DROP_CONFIRM = 60 * MINUTE;
+/** After this many answers that are not a YouLess one in a row, the model is detected again. */
+export const REDETECT_AFTER = 3;
 
 /** A gas or water reading older than this is stale (the device keeps its last one). */
 export const METER_STALE_AFTER = 26 * HOUR;

@@ -19,8 +19,8 @@ votre lecteur fournit :
 | Index de consommation (kWh)                              | 1 min        | capteur d'énergie, **index** : suivi énergétique |
 | Index par tarif 1 / 2 (kWh, compteur P1)                 | 1 min        | capteurs simples                                 |
 | Index d'injection, total et par tarif (kWh, compteur P1) | 1 min        | capteurs simples, **jamais facturés**            |
-| Tarif en cours (1 ou 2)                                  | 1 min        | capteur simple                                   |
-| Puissance, tension, courant par phase                    | 10 s         | capteurs (firmware LS120 1.5 et plus)            |
+| Tarif en cours (tel que donné par le YouLess)            | 1 min        | capteur simple                                   |
+| Puissance, tension, courant par phase                    | 10 s         | capteurs sans historique par défaut (LS120 1.5+) |
 | Entrée S0 : puissance (W) et index (kWh)                 | 10 s / 1 min | capteurs simples                                 |
 | Gaz (m³), eau (m³)                                       | 1 min        | capteurs de volume, **hors suivi énergétique**   |
 
@@ -31,8 +31,9 @@ L'injection, le gaz et l'eau restent à part : Gladys facturerait le gaz au
 tarif de l'électricité, et l'injection serait comptée comme une
 consommation.
 
-Avec un compteur P1, la puissance est la puissance **nette** : elle devient
-négative quand vous injectez.
+Avec un compteur P1, la puissance est supposée être la puissance **nette** :
+elle deviendrait négative quand vous injectez (non vérifié). Le tarif en cours
+est publié tel que le YouLess le donne (0/1 ou 1/2 selon les sources).
 
 ## Installation
 
@@ -54,11 +55,16 @@ négative quand vous injectez.
 
 - la page `/d` répond (MAC, firmware) et `/e` donne les données Enelogic :
   **LS120**, lu par `/e`, plus `/f` (phases) à partir du firmware 1.5 ;
-- `/d` répond mais pas `/e` : **LS120 firmware PVOutput**, lu par `/a?f=j` ;
-- pas de `/d` : **LS110**, lu par `/a?f=j`.
+- `/d` répond mais `/e` répond 404 ou sans données Enelogic : **LS120
+  firmware PVOutput**, lu par `/a?f=j` ;
+- `/d` répond 404 : **LS110**, lu par `/a?f=j`.
 
-Un LS120 est reconnu par son adresse MAC ; un LS110 (sans MAC) par son
-adresse.
+Toute autre réponse (une autre erreur HTTP, pas de réponse) est une panne
+passagère, réessayée : jamais une supposition de modèle. Un LS120 est reconnu
+par son adresse MAC ; un LS110 (sans MAC) par son adresse. Un appareil créé
+comme LS120 n'est jamais « rétrogradé » en LS110 ou en firmware PVOutput par
+une détection : l'état le signale et l'intégration réessaie (si vous avez
+remplacé le YouLess, supprimez l'ancien appareil).
 
 ## Bon à savoir
 
@@ -68,9 +74,20 @@ adresse.
 - **Mot de passe refusé** : un essai toutes les 5 minutes seulement.
 - **Page des phases** (`/f`) en panne : la puissance et les index continuent ;
   l'état le signale.
-- **Index incohérent** (chute à 0, saut énorme) : il n'est pas envoyé à
-  Gladys tant qu'il n'a pas été relu 3 fois de suite, pour ne pas fausser la
-  consommation et le coût (un compteur remplacé finit donc par passer).
+- **Index de consommation protégé** (Gladys compte chaque remontée en
+  entier) :
+  - un index à 0 n'est jamais envoyé ; avec un compteur P1, une lecture sans
+    données P1 (coupure du câble P1) ne donne aucun index, jamais `net` ;
+  - une **baisse** (compteur remplacé, compteur remis à zéro dans le YouLess)
+    n'est acceptée qu'après 60 minutes de valeurs non nulles et qui ne
+    baissent plus ;
+  - un **saut vers le haut** (plus de 100 kW en moyenne depuis la dernière
+    valeur) n'est **jamais** accepté tout seul : il est retenu et l'état de
+    l'intégration l'affiche. S'il est juste, **enregistrez la configuration**
+    de l'intégration : l'index en cours est alors accepté, et la différence
+    est **comptée une fois** comme consommation.
+- **Mot de passe refusé par la page des phases** : elle est laissée de côté
+  5 minutes, sans nouvelle connexion ; le reste continue.
 - Le gaz et l'eau d'un relevé de plus de 26 h sont ignorés (le YouLess garde
   sa dernière valeur quand le compteur ne répond plus).
 - Les valeurs inchangées ne sont renvoyées que toutes les 10 minutes ; à
@@ -78,14 +95,17 @@ adresse.
   à nouveau.
 - Les caractéristiques de l'appareil sont figées à sa création : si une
   valeur apparaît plus tard (premier relevé de gaz, par exemple), cliquez sur
-  « Mettre à jour » dans l'onglet Découverte.
+  « Mettre à jour » dans l'onglet Découverte : les nouvelles valeurs arrivent
+  aussitôt. L'appareil republié ne perd jamais une caractéristique de
+  l'appareil créé, même si une valeur manque un moment.
 
 ## Limites
 
 - Un seul YouLess par installation de l'intégration.
 - Le mot de passe passe en clair sur le réseau local (contrainte de
-  l'appareil) ; la connexion par la page `/L?w=<mot de passe>` est supposée,
-  elle n'a pas été vérifiée sur un appareil protégé.
+  l'appareil) ; la connexion par la page `/L?w=<mot de passe>` est supposée
+  (youless-api utilise l'authentification HTTP Basic, non reprise ici), elle
+  n'a pas été vérifiée sur un appareil protégé.
 - Les pics mensuels (`pp`, `pa`) du LS120 ne sont pas lus pour l'instant.
 
 ## Crédits

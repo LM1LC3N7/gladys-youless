@@ -21,8 +21,17 @@ the notes of the version's GitHub Release.
   indexes as plain sensors (never billed); the current tariff; power,
   voltage and current per phase; the S0 input; gas and water as volume
   sensors in m³, out of the energy monitoring.
-- An implausible consumption index (a drop, a jump over 100 kW on average)
-  is held back until read 3 times in a row.
+- The consumption index is protected (the core counts every rise in full):
+  never 0; no index at all during a P1 outage (never `net`); a drop taken
+  after 60 minutes of non-zero, non-decreasing values; a jump over 100 kW on
+  average held, shown in the status and accepted only when the user saves the
+  configuration (the difference counted once).
+- Detection that never guesses: only a 404 of `/d` means LS110, only a 404
+  or a non-Enelogic answer of `/e` means the PVOutput firmware; a created
+  LS120 is never downgraded; repeated unknown answers trigger a new
+  detection.
+- The device published again never loses a feature of the created one, and
+  "Update" in Discovery gets the new features their values at once.
 - Resilience: an unreachable device is tried again after 10 s, doubled up to
   5 minutes; a refused password every 5 minutes; the phases page failing
   never holds back the other values; each reconnection to Gladys publishes
