@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-17
+
 ### Added
 
 - Local reading of a YouLess LS110, LS120 or LS120 with the PVOutput
@@ -42,4 +44,5 @@ the notes of the version's GitHub Release.
 - Documentation in English and French; `LICENSE` (Apache-2.0) and
   `THIRD_PARTY_NOTICES.md` (MIT license of youless-api), shipped in the image.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-youless/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-youless/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-youless/releases/tag/v0.1.1
