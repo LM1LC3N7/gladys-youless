@@ -74,10 +74,14 @@ integration tries again (if you replaced the YouLess, delete the old device).
   - an index of 0 is never sent; with a P1 meter, a read without P1 data (P1
     cable cut) gives no index at all, never `net`;
   - a **drop** (meter replaced, counter set again in the YouLess) is taken
-    only after 60 minutes of non-zero values that stop going down;
+    only after 60 minutes of non-zero values that stop going down; the
+    consumption of those 60 minutes of waiting is lost (about 0.6 kWh at
+    600 W on average);
   - a **jump up** (more than 100 kW on average since the last value) is
-    **never** taken by itself: it is held and the integration status shows
-    it. If it is right, **save the configuration** of the integration: the
+    **never** taken by itself, neither with time nor by a restart: every value
+    at or above it stays held (the hold is kept in `/data`), the last accepted
+    value is sent to Gladys again, and the integration status shows the jump.
+    If it is right, **save the configuration** of the integration: the
     current index is then accepted, and the difference is **counted once** as
     consumption.
 - **Phases page refusing the password**: left alone for 5 minutes, without a

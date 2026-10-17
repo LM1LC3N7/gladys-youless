@@ -23,9 +23,10 @@ the notes of the version's GitHub Release.
   sensors in m³, out of the energy monitoring.
 - The consumption index is protected (the core counts every rise in full):
   never 0; no index at all during a P1 outage (never `net`); a drop taken
-  after 60 minutes of non-zero, non-decreasing values; a jump over 100 kW on
-  average held, shown in the status and accepted only when the user saves the
-  configuration (the difference counted once).
+  after 60 minutes of non-zero, non-decreasing values (their consumption is
+  lost); a jump over 100 kW on average held whatever the time passed and
+  across restarts (kept in `/data`), shown in the status and accepted only
+  when the user saves the configuration (the difference counted once).
 - Detection that never guesses: only a 404 of `/d` means LS110, only a 404
   or a non-Enelogic answer of `/e` means the PVOutput firmware; a created
   LS120 is never downgraded; repeated unknown answers trigger a new

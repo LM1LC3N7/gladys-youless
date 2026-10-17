@@ -45,6 +45,7 @@ src/app.js                        YoulessApp: detection, device, 10 s reads, ind
 src/youless/client.js             the only HTTP access (login, bounded body, no redirect)
 src/youless/model.js              /d, /a, /e, /f answers -> snapshot, capabilities (pure)
 src/guard.js                      plausibility of the billed index (pure)
+src/store.js                      the guard state kept in /data across restarts
 src/devices.js                    the device, feature keys, states (pure)
 src/config.js                     the address and password, normalized
 src/constants.js                  pages, pacing, limits, manifest keys
@@ -74,7 +75,8 @@ test/                             node --test, against the SDK's fake Gladys (in
 - **External ids are forever**: `youless:<MAC>` or `youless:host-<address>`,
   the `FEATURE` keys of `src/devices.js`, the manifest keys.
 - **The container rootfs is read-only.** Write only under `/data`, the one
-  writable volume (nothing is written today).
+  writable volume: `src/store.js` keeps the index reference and a jump held
+  in `/data/youless-state.json`.
 - **Versions belong to the Release workflow** (Actions → Release). Never edit
   `version` in `package.json` or in the manifest, nor the `docker_image` tag,
   by hand — except on the README's hand-pushed tag path, which bumps all three

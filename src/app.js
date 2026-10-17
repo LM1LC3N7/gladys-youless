@@ -33,6 +33,7 @@ import {
   round,
 } from './devices.js';
 import { IndexGuard } from './guard.js';
+import { createFileStore } from './store.js';
 import { T } from './i18n.js';
 import { YoulessClient, YoulessError } from './youless/client.js';
 import { bringsNew, capabilitiesOf, mergeCapabilities } from './youless/model.js';
@@ -61,8 +62,12 @@ export class YoulessApp {
     now = Date.now,
     timers = defaultTimers,
     clientFactory = (options) => new YoulessClient(options),
+    store = createFileStore(),
   }) {
     this.gladys = gladys;
+    /** /data: the index reference and the jump held, across restarts. */
+    this.store = store;
+    this.savedGuard = undefined;
     this.logger = logger;
     this.now = now;
     this.timers = timers;
@@ -243,8 +248,20 @@ export class YoulessApp {
 
   async onDeviceCreated(device) {
     if (this.device && device?.external_id === this.externalIds().device) {
-      // A new device: no reference of the index yet, its values right away.
+      // A new device: no reference of the index yet (nor a jump kept in /data
+      // for a deleted device of the same id), its values right away.
       this.guard = undefined;
+      this.savedGuard = undefined;
+      const indexId = this.externalIds().feature(FEATURE.CONSUMPTION_INDEX);
+      const kept = this.store.load();
+      if (indexId in kept) {
+        delete kept[indexId];
+        await this.store
+          .save(kept)
+          .catch((err) =>
+            this.logger.warn(`Clearing the YouLess index state failed (${err?.code ?? 'error'})`),
+          );
+      }
       this.lastIndexAt = 0;
       await this.run(this.generation, () => this.tick());
     }
@@ -383,13 +400,13 @@ export class YoulessApp {
     const states = liveStates(external, snapshot);
     if (now - this.lastIndexAt >= INDEX_INTERVAL) {
       this.lastIndexAt = now;
-      this.guard ??= new IndexGuard(
-        lastValueOf(created, external.feature(FEATURE.CONSUMPTION_INDEX)),
-      );
+      const indexId = external.feature(FEATURE.CONSUMPTION_INDEX);
+      this.guard ??= new IndexGuard(lastValueOf(created, indexId), this.store.load()[indexId]);
       // The value Gladys will hold (3 decimals) is the one the guard checks.
       const total =
         snapshot.consumption.total === undefined ? undefined : round(snapshot.consumption.total, 3);
       const plausible = total !== undefined && this.guard.accept(total, now);
+      await this.saveGuard(indexId);
       if (total !== undefined && !plausible) {
         this.logger.warn(
           this.guard.jump
@@ -397,7 +414,10 @@ export class YoulessApp {
             : 'YouLess consumption index held back: a drop or a 0, not confirmed',
         );
       }
-      states.push(...indexStates(external, snapshot, plausible ? total : undefined));
+      // While a jump is held, the last accepted value is sent again (no delta
+      // for the core; the heartbeat keeps its date recent in Gladys).
+      const held = this.guard.jump ? this.guard.last?.value : undefined;
+      states.push(...indexStates(external, snapshot, plausible ? total : held));
     }
     // Only the features the created device has (they are fixed at its creation).
     const features = created.features ? new Set(created.features.map((f) => f.external_id)) : null;
@@ -410,6 +430,24 @@ export class YoulessApp {
     await this.gladys
       .publishChangedStates(allowed, { heartbeat: STATE_HEARTBEAT })
       .catch((err) => this.logger.warn(`Publishing the YouLess values failed: ${err.message}`));
+  }
+
+  /** Keeps the guard in /data when its reference or its held jump changed. */
+  async saveGuard(indexId) {
+    const state = this.guard.state();
+    const key = JSON.stringify([
+      state.last,
+      state.jump && { from: state.jump.from, threshold: state.jump.threshold },
+    ]);
+    if (key === this.savedGuard) {
+      return;
+    }
+    try {
+      await this.store.save({ ...this.store.load(), [indexId]: state });
+      this.savedGuard = key;
+    } catch (err) {
+      this.logger.warn(`Saving the YouLess index state in /data failed (${err?.code ?? 'error'})`);
+    }
   }
 
   // --- Configuration screen button --------------------------------------------------

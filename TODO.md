@@ -120,9 +120,20 @@
   (fr/en), accepted only by an explicit gesture, a save of the configuration
   (`start(…, { fresh: true })`): the current index is then published and the
   difference counted once (documented); a reconnection never accepts it;
-  (e) the guard starts again at `onDeviceCreated`. The value checked is the
-  one published (3 decimals). After a restart, the last value Gladys holds
-  (`last_value`, `last_value_changed`) is the reference.
+  (e) the guard starts again at `onDeviceCreated` (its /data entry removed).
+  The value checked is the one published (3 decimals).
+- **Jump held** (approval round 1): the margin (100 kW × hours since the
+  last value published) grows while nothing is published, so it would end up
+  covering the jump. While a jump is held and not accepted, every value at
+  or above it (`threshold`, the lowest jump seen) stays held whatever the
+  time; only a value below it goes through the usual rule. Kept across
+  restarts in `/data/youless-state.json` (reference + jump, written through a
+  temporary file, only when they change; a failure is logged, not fatal);
+  the most recent reference of /data and of Gladys (`last_value`,
+  `last_value_changed`) wins. While held, the last accepted value is sent
+  again (no delta for the core, its date kept recent by the 10-minute
+  heartbeat). A confirmed drop loses the consumption of its 60 minutes of
+  waiting (documented).
 - **Pace**: one timer every 10 s; the indexes (and gas, water, tariff, S0
   index) are published when 60 s have passed; `publishChangedStates` with a
   10-minute heartbeat. At most about 70 states a minute with three phases,

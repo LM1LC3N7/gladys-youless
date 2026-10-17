@@ -43,9 +43,12 @@ Gladys ⇄ SDK ⇄ src/app.js (YoulessApp)
 - **Index plausibility** (`src/guard.js`; the core skips a negative delta
   but counts every rise in full): never 0; once P1 values were seen, a read
   without them gives no index (never `net`); a drop is taken after 60 min of
-  non-zero, non-decreasing values; a jump over 100 kW on average is never
-  confirmed by repetition: held, shown in the status, accepted only when the
-  user saves the configuration (the difference counted once).
+  non-zero, non-decreasing values (their consumption is lost); a jump over
+  100 kW on average is never confirmed by repetition nor by time: every value
+  at or above it stays held, the hold is kept in `/data/youless-state.json`
+  across restarts, the last accepted value is sent again, the status shows
+  it, and only a save of the configuration accepts it (the difference counted
+  once).
 - **Errors**: unreachable → retries after 10 s, doubled up to 5 min; refused
   password → every 5 min; a reconnection to Gladys keeps the delay, a save of
   the form ends it. Errors are logged with our own codes, never a text of the

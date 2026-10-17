@@ -80,12 +80,16 @@ remplacé le YouLess, supprimez l'ancien appareil).
     données P1 (coupure du câble P1) ne donne aucun index, jamais `net` ;
   - une **baisse** (compteur remplacé, compteur remis à zéro dans le YouLess)
     n'est acceptée qu'après 60 minutes de valeurs non nulles et qui ne
-    baissent plus ;
+    baissent plus ; la consommation de ces 60 minutes d'attente est perdue
+    (environ 0,6 kWh pour 600 W de moyenne) ;
   - un **saut vers le haut** (plus de 100 kW en moyenne depuis la dernière
-    valeur) n'est **jamais** accepté tout seul : il est retenu et l'état de
-    l'intégration l'affiche. S'il est juste, **enregistrez la configuration**
-    de l'intégration : l'index en cours est alors accepté, et la différence
-    est **comptée une fois** comme consommation.
+    valeur) n'est **jamais** accepté tout seul, ni par le temps qui passe ni
+    par un redémarrage : toute valeur égale ou supérieure reste retenue (la
+    retenue est gardée dans `/data`), la dernière valeur acceptée est
+    renvoyée à Gladys, et l'état de l'intégration affiche le saut. S'il est
+    juste, **enregistrez la configuration** de l'intégration : l'index en
+    cours est alors accepté, et la différence est **comptée une fois** comme
+    consommation.
 - **Mot de passe refusé par la page des phases** : elle est laissée de côté
   5 minutes, sans nouvelle connexion ; le reste continue.
 - Le gaz et l'eau d'un relevé de plus de 26 h sont ignorés (le YouLess garde

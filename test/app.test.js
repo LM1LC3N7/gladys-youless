@@ -8,6 +8,7 @@ import { createFakeGladys } from '@gladysassistant/integration-sdk/testing';
 import { YoulessApp } from '../src/app.js';
 import { ACTIONS, AUTH_RETRY, POWER_INTERVAL, RETRY_MIN } from '../src/constants.js';
 import { buildDevice } from '../src/devices.js';
+import { createMemoryStore } from '../src/store.js';
 import { YoulessClient } from '../src/youless/client.js';
 import { capabilitiesOf, mergeCapabilities, parseEnelogic } from '../src/youless/model.js';
 import { createFetch, timeoutError } from './helpers/fakeFetch.js';
@@ -48,18 +49,25 @@ function createdLs120() {
   );
 }
 
-async function setup({ config = CONFIG, routes = ls120Routes(), devices = [] } = {}) {
+async function setup({
+  config = CONFIG,
+  routes = ls120Routes(),
+  devices = [],
+  store = createMemoryStore(),
+  now = NOW,
+} = {}) {
   const fake = createFetch(routes);
   const gladys = createFakeGladys({ selector: SELECTOR, config, devices });
   await gladys.connect();
   const timers = createFakeTimers();
-  const clock = { now: NOW };
+  const clock = { now };
   const logger = createLogger();
   const app = new YoulessApp({
     gladys,
     logger,
     now: () => clock.now,
     timers,
+    store,
     clientFactory: (options) => new YoulessClient({ ...options, fetchImpl: fake.fetch }),
   });
   gladys.onDeviceCreated((device) => app.onDeviceCreated(device));
@@ -266,6 +274,70 @@ test('the device created later: its values are read at once', async () => {
 
 const MINUTE = 60_000;
 const indexes = (gladys) => published(gladys, 'consumption_index').map((s) => s.state);
+const distinct = (values) => [...new Set(values)];
+
+test('+50 kWh at once is held for 60 minutes and more (the margin never covers it)', async () => {
+  const routes = ls120Routes();
+  const { app, gladys, tick } = await setup({ routes, devices: [createdLs120()] });
+  await app.start(CONFIG);
+  await app.idle();
+  routes['/e'] = () => json([{ ...ENELOGIC[0], p1: 4753.562 }]);
+  for (let i = 0; i < 90; i += 1) {
+    await tick(MINUTE);
+  }
+  assert.deepEqual(distinct(indexes(gladys)), [9194.193]);
+  assert.match(status(gladys).message.fr, /sauté/);
+});
+
+test('an LS110 set from 2.5 to 12,345 kWh is held for 200 hours', async () => {
+  const gladys0 = createFakeGladys({ selector: SELECTOR });
+  const ls110 = buildDevice(
+    gladys0,
+    { model: 'LS110' },
+    { power: true, consumption: true },
+    ADDRESS,
+  );
+  const routes = ls110Routes({ '/a?f=j': () => json({ cnt: '2,5', pwr: 100 }) });
+  const { app, gladys, tick } = await setup({ routes, devices: [ls110] });
+  await app.start(CONFIG);
+  await app.idle();
+  routes['/a?f=j'] = () => json({ cnt: '12345,0', pwr: 100 });
+  for (let i = 0; i < 200; i += 1) {
+    await tick(60 * MINUTE);
+  }
+  const id = `${ls110.external_id}:consumption_index`;
+  const values = gladys.fake.states
+    .filter((s) => s.device_feature_external_id === id)
+    .map((s) => s.state);
+  assert.deepEqual(distinct(values), [2.5]);
+});
+
+test('a jump held stays held across a restart, until the configuration is saved', async () => {
+  const store = createMemoryStore();
+  const routes = ls120Routes();
+  const first = await setup({ routes, devices: [createdLs120()], store });
+  await first.app.start(CONFIG);
+  await first.app.idle();
+  routes['/e'] = () => json([{ ...ENELOGIC[0], p1: 9703.562 }]);
+  await first.tick(MINUTE);
+  await first.app.stop();
+  // A new container, hours later; Gladys still holds an old value.
+  const created = createdLs120();
+  const index = created.features.find((f) => f.external_id.endsWith(':consumption_index'));
+  index.last_value = 9194.193;
+  index.last_value_changed = new Date(NOW - 200 * 3_600_000).toISOString();
+  const second = await setup({ routes, devices: [created], store, now: NOW + 5 * 3_600_000 });
+  await second.app.start(CONFIG);
+  await second.app.idle();
+  for (let i = 0; i < 5; i += 1) {
+    await second.tick(MINUTE);
+  }
+  assert.ok(!indexes(second.gladys).includes(14194.193));
+  assert.match(status(second.gladys).message.fr, /sauté/);
+  await second.app.start(CONFIG, { fresh: true });
+  await second.app.idle();
+  assert.equal(indexes(second.gladys).at(-1), 14194.193);
+});
 
 test('a P1 outage of 10 minutes never bills the index (neither 0 nor net)', async () => {
   const routes = ls120Routes();
@@ -292,12 +364,13 @@ test('a jump up is held until the user saves the configuration, then counted onc
   for (let i = 0; i < 30; i += 1) {
     await tick(MINUTE);
   }
-  assert.deepEqual(indexes(gladys), [9194.193]);
+  // The last accepted value may be sent again (heartbeat), never the jump.
+  assert.deepEqual(distinct(indexes(gladys)), [9194.193]);
   assert.match(status(gladys).message.fr, /sauté de 9194.193 à 14194.193 kWh/);
   assert.match(status(gladys).message.en, /save the configuration/);
   await app.start(CONFIG, { fresh: true });
   await app.idle();
-  assert.deepEqual(indexes(gladys), [9194.193, 14194.193]);
+  assert.deepEqual(distinct(indexes(gladys)), [9194.193, 14194.193]);
   assert.doesNotMatch(status(gladys).message.fr, /sauté/);
   // A simple reconnection never accepts a jump.
   routes['/e'] = () => json([{ ...ENELOGIC[0], p1: 99703.562 }]);

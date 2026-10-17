@@ -15,6 +15,10 @@ import { parseAddress, normalizeConfig } from '../src/config.js';
 import { INDEX_DROP_CONFIRM } from '../src/constants.js';
 import { FEATURE, buildDevice, indexStates, liveStates, ids } from '../src/devices.js';
 import { IndexGuard } from '../src/guard.js';
+import { createFileStore } from '../src/store.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   bringsNew,
   capabilitiesOf,
@@ -180,7 +184,7 @@ test('index guard: a jump up is never confirmed by repetition, only by the user'
   for (let i = 1; i <= 500; i += 1) {
     assert.equal(guard.accept(6000 + i * 0.01, i * MINUTE), false);
   }
-  assert.deepEqual(guard.jump, { from: 1000, to: 6005 });
+  assert.deepEqual(guard.jump, { from: 1000, to: 6005, threshold: 6000.01 });
   guard.acceptJump();
   assert.equal(guard.accept(6005.01, 501 * MINUTE), true);
   assert.equal(guard.jump, undefined);
@@ -294,4 +298,45 @@ test('states: live values and indexes apart, rounded, the index only when let th
   assert.ok(
     index.some((s) => s.device_feature_external_id.endsWith(':gas') && s.state === 1624.264),
   );
+});
+
+test('index guard: a held jump is never covered by the margin growing over time', () => {
+  const guard = new IndexGuard({ value: 2.5, at: 0 });
+  assert.equal(guard.accept(12345, MINUTE), false);
+  // 200 hours later, 100 kW × 200 h would cover the jump: still held.
+  assert.equal(guard.accept(12345.5, 200 * 60 * MINUTE), false);
+  assert.deepEqual(guard.jump, { from: 2.5, to: 12345.5, threshold: 12345 });
+  // A value below the jump goes through the usual rule again.
+  assert.equal(guard.accept(2.6, 200 * 60 * MINUTE + MINUTE), true);
+  assert.equal(guard.jump, undefined);
+});
+
+test('index guard: its state survives a restart, the most recent reference wins', () => {
+  const guard = new IndexGuard({ value: 1000, at: 0 });
+  guard.accept(1050, MINUTE);
+  const saved = JSON.parse(JSON.stringify(guard.state()));
+  const again = new IndexGuard({ value: 900, at: -1000 * MINUTE }, saved);
+  assert.deepEqual(again.last, { value: 1000, at: 0 });
+  assert.equal(again.accept(1050.1, 60 * MINUTE), false, 'still held after the restart');
+  again.acceptJump();
+  assert.equal(again.accept(1050.2, 61 * MINUTE), true);
+  // A newer value in Gladys than in /data wins.
+  assert.deepEqual(new IndexGuard({ value: 1100, at: 5 }, saved).last, { value: 1100, at: 5 });
+  assert.deepEqual(new IndexGuard(undefined, { last: null, jump: null }).state(), {
+    last: null,
+    jump: null,
+  });
+});
+
+test('the /data store: written through a temporary file, read back, empty when absent', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'youless-'));
+  try {
+    const store = createFileStore(join(dir, 'state.json'));
+    assert.deepEqual(store.load(), {});
+    await store.save({ a: { last: { value: 1, at: 2 }, jump: null } });
+    assert.deepEqual(store.load(), { a: { last: { value: 1, at: 2 }, jump: null } });
+    assert.deepEqual(createFileStore(join(dir, 'missing', 'x.json')).load(), {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
