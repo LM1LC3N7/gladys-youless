@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-18
+
 ### Fixed
 
 - Fictitious kWh in the energy monitoring after a drop of the consumption
@@ -83,5 +85,6 @@ the notes of the version's GitHub Release.
 - Documentation in English and French; `LICENSE` (Apache-2.0) and
   `THIRD_PARTY_NOTICES.md` (MIT license of youless-api), shipped in the image.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-youless/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-youless/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LM1LC3N7/gladys-youless/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LM1LC3N7/gladys-youless/releases/tag/v0.1.1
