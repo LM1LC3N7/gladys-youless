@@ -32,7 +32,7 @@ import {
   paramOf,
   round,
 } from './devices.js';
-import { IndexGuard } from './guard.js';
+import { IndexGuard, indexOfTariffs } from './guard.js';
 import { createFileStore } from './store.js';
 import { T } from './i18n.js';
 import { YoulessClient, YoulessError } from './youless/client.js';
@@ -55,6 +55,12 @@ function lastValueOf(device, featureId) {
     : undefined;
 }
 
+/** The P1 tariffs kept in /data with the guard: `{ p1, p2 }` of the last index accepted. */
+const validTariffs = (tariffs) =>
+  tariffs && Number.isFinite(tariffs.p1) && Number.isFinite(tariffs.p2)
+    ? { p1: tariffs.p1, p2: tariffs.p2 }
+    : undefined;
+
 export class YoulessApp {
   constructor({
     gladys,
@@ -65,7 +71,7 @@ export class YoulessApp {
     store = createFileStore(),
   }) {
     this.gladys = gladys;
-    /** /data: the index reference and the jump held, across restarts. */
+    /** /data: the index reference, the value held and the P1 tariffs, across restarts. */
     this.store = store;
     this.savedGuard = undefined;
     this.logger = logger;
@@ -79,6 +85,12 @@ export class YoulessApp {
     /** What the device showed it gives, and what its created device carries: only grows. */
     this.capabilities = undefined;
     this.guard = undefined;
+    /** The index feature the guard belongs to. */
+    this.guardIndexId = undefined;
+    /** The P1 tariffs of the last index accepted (src/guard.js indexOfTariffs). */
+    this.tariffRef = undefined;
+    /** The last check of the P1 tariffs gave no index (a register glitching). */
+    this.indexUndefined = false;
     this.lastIndexAt = 0;
     /** Retries: kept across reconnections to Gladys, reset by a save of the form. */
     this.failures = 0;
@@ -98,7 +110,8 @@ export class YoulessApp {
 
   /**
    * `fresh`: the user saved the form (not a reconnection): the retry delay
-   * ends, and a consumption index jump held back is accepted (counted once).
+   * ends. It accepts nothing: a value held back is only taken by its own
+   * action (`acceptHeldIndex`).
    */
   start(raw = {}, { fresh = false } = {}) {
     return this.serialize(() => this.doStart(raw, { fresh }));
@@ -135,6 +148,10 @@ export class YoulessApp {
       this.device = undefined;
       this.capabilities = undefined;
       this.guard = undefined;
+      this.guardIndexId = undefined;
+      this.savedGuard = undefined;
+      this.tariffRef = undefined;
+      this.indexUndefined = false;
       this.failures = 0;
       this.nextTryAt = 0;
       this.unknownAnswers = 0;
@@ -142,10 +159,6 @@ export class YoulessApp {
     if (fresh) {
       this.failures = 0;
       this.nextTryAt = 0;
-      if (this.guard?.jump) {
-        this.logger.info('YouLess consumption index jump accepted by a save of the configuration');
-        this.guard.acceptJump();
-      }
     }
     if (!config.address) {
       await this.setStatus(false, config.invalidAddress ? T.badAddress : T.noAddress);
@@ -248,10 +261,8 @@ export class YoulessApp {
 
   async onDeviceCreated(device) {
     if (this.device && device?.external_id === this.externalIds().device) {
-      // A new device: no reference of the index yet (nor a jump kept in /data
-      // for a deleted device of the same id), its values right away.
-      this.guard = undefined;
-      this.savedGuard = undefined;
+      // A new device: no reference of the index yet (nor a value held in
+      // /data for a deleted device of the same id), its values right away.
       const indexId = this.externalIds().feature(FEATURE.CONSUMPTION_INDEX);
       const kept = this.store.load();
       if (indexId in kept) {
@@ -262,6 +273,12 @@ export class YoulessApp {
             this.logger.warn(`Clearing the YouLess index state failed (${err?.code ?? 'error'})`),
           );
       }
+      // After the save: a read finished meanwhile must not leave its guard.
+      this.guard = undefined;
+      this.guardIndexId = undefined;
+      this.savedGuard = undefined;
+      this.tariffRef = undefined;
+      this.indexUndefined = false;
       this.lastIndexAt = 0;
       await this.run(this.generation, () => this.tick());
     }
@@ -354,8 +371,49 @@ export class YoulessApp {
     const notes = [];
     if (this.phasesFailing) notes.push(T.notes.phases);
     if (this.p1Outage) notes.push(T.notes.p1Outage);
-    if (this.guard?.jump) notes.push(T.notes.jump(this.guard.jump));
+    else if (this.indexUndefined) notes.push(T.notes.noIndex);
+    notes.push(...this.heldNotes());
     return T.ok(this.device.model, this.config.address, notes);
+  }
+
+  /** The index held back, if any, as a note: shown in every status, connected or not. */
+  heldNotes() {
+    const held = this.currentGuard()?.held;
+    return held ? [T.notes.held(held)] : [];
+  }
+
+  /**
+   * The created device of the YouLess: the detected one, or, before a
+   * detection (a password refused at a start), the only created device of
+   * this integration.
+   */
+  guardedDevice() {
+    if (this.device) {
+      return this.createdDevice();
+    }
+    const ours = this.ourDevices();
+    return ours.length === 1 ? ours[0] : undefined;
+  }
+
+  /** The guard of the created device, built from Gladys and /data when needed. */
+  currentGuard() {
+    const created = this.guardedDevice();
+    if (!created) {
+      return undefined;
+    }
+    return this.guardOf(created, `${created.external_id}:${FEATURE.CONSUMPTION_INDEX}`);
+  }
+
+  /** The guard of a created device, from Gladys and /data (built again for another device). */
+  guardOf(created, indexId) {
+    if (!this.guard || this.guardIndexId !== indexId) {
+      const saved = this.store.load()[indexId];
+      this.guard = new IndexGuard(lastValueOf(created, indexId), saved, this.now());
+      this.guardIndexId = indexId;
+      this.savedGuard = undefined;
+      this.tariffRef = validTariffs(saved?.tariffs);
+    }
+    return this.guard;
   }
 
   /** The phases page is secondary: its failure is logged once, the rest goes on. */
@@ -373,16 +431,18 @@ export class YoulessApp {
     const code = err?.code ?? 'error';
     let wait;
     let message;
+    // The index held back stays shown while the YouLess cannot be read.
+    const notes = this.heldNotes();
     if (PASSWORD_ERRORS.has(code)) {
       wait = AUTH_RETRY;
-      message = code === 'auth' ? T.auth(wait) : T.protected(wait);
+      message = code === 'auth' ? T.auth(wait, notes) : T.protected(wait, notes);
     } else {
       wait = Math.min(RETRY_MIN * 2 ** this.failures, RETRY_MAX);
       this.failures += 1;
       message =
         code === 'downgrade'
-          ? T.downgrade(this.config.address, wait)
-          : T.unreachable(this.config.address, err, wait);
+          ? T.downgrade(this.config.address, wait, notes)
+          : T.unreachable(this.config.address, err, wait, notes);
     }
     this.nextTryAt = now + wait;
     // Our own words only (YoulessError): never a text of the device, never the password.
@@ -401,22 +461,31 @@ export class YoulessApp {
     if (now - this.lastIndexAt >= INDEX_INTERVAL) {
       this.lastIndexAt = now;
       const indexId = external.feature(FEATURE.CONSUMPTION_INDEX);
-      this.guard ??= new IndexGuard(lastValueOf(created, indexId), this.store.load()[indexId]);
+      const guard = this.guardOf(created, indexId);
+      const { t1, t2 } = snapshot.consumption;
+      // The P1 path of an LS120: both tariffs checked before their sum. Never
+      // for `cnt` (LS110, PVOutput) nor `net` (LS120 without P1).
+      const sum = snapshot.p1Meter
+        ? indexOfTariffs(t1, t2, this.tariffRef)
+        : snapshot.consumption.total;
+      this.indexUndefined = Boolean(snapshot.p1Meter) && sum === undefined;
       // The value Gladys will hold (3 decimals) is the one the guard checks.
-      const total =
-        snapshot.consumption.total === undefined ? undefined : round(snapshot.consumption.total, 3);
-      const plausible = total !== undefined && this.guard.accept(total, now);
+      const total = sum === undefined ? undefined : round(sum, 3);
+      const plausible = total !== undefined && guard.accept(total, now);
+      if (plausible && snapshot.p1Meter) {
+        this.tariffRef = { p1: t1, p2: t2 };
+      }
       await this.saveGuard(indexId);
       if (total !== undefined && !plausible) {
         this.logger.warn(
-          this.guard.jump
-            ? 'YouLess consumption index jump held back: save the configuration to accept it'
-            : 'YouLess consumption index held back: a drop or a 0, not confirmed',
+          guard.held
+            ? `YouLess consumption index ${guard.held.direction === 'down' ? 'drop' : 'jump'} held back: only its action accepts it`
+            : 'YouLess consumption index held back: 0 or not a number',
         );
       }
-      // While a jump is held, the last accepted value is sent again (no delta
+      // While a value is held, the last accepted one is sent again (no delta
       // for the core; the heartbeat keeps its date recent in Gladys).
-      const held = this.guard.jump ? this.guard.last?.value : undefined;
+      const held = guard.held ? guard.last?.value : undefined;
       states.push(...indexStates(external, snapshot, plausible ? total : held));
     }
     // Only the features the created device has (they are fixed at its creation).
@@ -432,12 +501,18 @@ export class YoulessApp {
       .catch((err) => this.logger.warn(`Publishing the YouLess values failed: ${err.message}`));
   }
 
-  /** Keeps the guard in /data when its reference or its held jump changed. */
+  /** Keeps the guard in /data when its reference, its value held or the tariffs changed. */
   async saveGuard(indexId) {
-    const state = this.guard.state();
+    const state = { ...this.guard.state(), tariffs: this.tariffRef ?? null };
     const key = JSON.stringify([
+      indexId,
       state.last,
-      state.jump && { from: state.jump.from, threshold: state.jump.threshold },
+      state.held && {
+        direction: state.held.direction,
+        from: state.held.from,
+        threshold: state.held.threshold,
+      },
+      state.tariffs,
     ]);
     if (key === this.savedGuard) {
       return;
@@ -457,6 +532,25 @@ export class YoulessApp {
     if (err?.code === 'protected') return T.protected(AUTH_RETRY);
     if (err?.code === 'downgrade') return T.downgrade(this.config.address, RETRY_MIN);
     return T.unreachable(this.config.address, err, RETRY_MIN);
+  }
+
+  /**
+   * The "Accept the held index" button: takes the value held as shown now
+   * (plus what the home may draw until the next read, src/guard.js), never
+   * anything else. Answers with what will be counted.
+   */
+  async acceptHeldIndex() {
+    const accepted = this.currentGuard()?.acceptHeld();
+    if (!accepted) {
+      return T.accept.nothing;
+    }
+    this.logger.info(
+      `YouLess consumption index ${accepted.direction === 'down' ? 'drop' : 'jump'} accepted by the user`,
+    );
+    // Published at the next read, which comes now.
+    this.lastIndexAt = 0;
+    this.firstRun = this.run(this.generation, () => this.tick());
+    return accepted.direction === 'down' ? T.accept.down(accepted) : T.accept.up(accepted);
   }
 
   /** The test button: find the device and read it once. */

@@ -73,17 +73,33 @@ integration tries again (if you replaced the YouLess, delete the old device).
 - **Protected consumption index** (Gladys counts every rise in full):
   - an index of 0 is never sent; with a P1 meter, a read without P1 data (P1
     cable cut) gives no index at all, never `net`;
-  - a **drop** (meter replaced, counter set again in the YouLess) is taken
-    only after 60 minutes of non-zero values that stop going down; the
-    consumption of those 60 minutes of waiting is lost (about 0.6 kWh at
-    600 W on average);
-  - a **jump up** (more than 100 kW on average since the last value) is
-    **never** taken by itself, neither with time nor by a restart: every value
-    at or above it stays held (the hold is kept in `/data`), the last accepted
-    value is sent to Gladys again, and the integration status shows the jump.
-    If it is right, **save the configuration** of the integration: the
-    current index is then accepted, and the difference is **counted once** as
-    consumption.
+  - with a P1 meter (LS120), both tariffs are checked first: a tariff that
+    falls to 0, or that goes down while the other does not, is a glitch of
+    one register: no index for that read (the status says so), until the
+    tariffs are consistent again;
+  - a **drop** (meter replaced, counter set again in the YouLess) and a
+    **jump up** (more than 100 kW on average since the last value) are
+    **never** taken by themselves, neither with time, nor by repetition, nor
+    by a restart, nor by saving the configuration: they are held (the hold is
+    kept in `/data`), the last accepted value is sent to Gladys again, and the
+    integration status shows the value held, also while the YouLess cannot be
+    read. A value back to normal (the drop or the jump was a glitch) ends the
+    hold, without billing anything;
+  - if the value held is right, click **Accept the held index** in the
+    configuration of the integration. It takes **exactly the value shown**
+    (plus what the home may draw until the next read): a **jump** is then
+    **counted once** as consumption (the button says how many kWh), a
+    **drop** bills nothing and the consumption goes on from there. Any other
+    value read afterwards is held again. Accept a jump only if this energy
+    was really consumed;
+  - the margin grows with the time since the last value accepted (100 kW on
+    average): after a **long outage** (YouLess off, network down), a large
+    rise can pass at once, up to 2,400 kWh after 24 hours;
+  - **way out of a dead end**: if the index stays held or absent for good (a
+    new meter whose register stays at 0, for instance), delete the YouLess
+    device in Gladys and create it again from the Discover tab: its
+    reference starts again from the current index (the history of the old
+    device is lost).
 - **Phases page refusing the password**: left alone for 5 minutes, without a
   new login; the rest goes on.
 - Gas and water readings older than 26 h are ignored (the YouLess keeps its

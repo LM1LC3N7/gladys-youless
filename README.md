@@ -42,13 +42,20 @@ Gladys ⇄ SDK ⇄ src/app.js (YoulessApp)
   The phases page is secondary: its failure never holds back the rest.
 - **Index plausibility** (`src/guard.js`; the core skips a negative delta
   but counts every rise in full): never 0; once P1 values were seen, a read
-  without them gives no index (never `net`); a drop is taken after 60 min of
-  non-zero, non-decreasing values (their consumption is lost); a jump over
-  100 kW on average is never confirmed by repetition nor by time: every value
-  at or above it stays held, the hold is kept in `/data/youless-state.json`
-  across restarts, the last accepted value is sent again, the status shows
-  it, and only a save of the configuration accepts it (the difference counted
-  once).
+  without them gives no index (never `net`); on the P1 path of an LS120 only
+  (never `cnt` nor `net`), both tariffs are checked against those of the
+  last index accepted (`indexOfTariffs`: one register at 0 or going down
+  alone gives no index). A drop and a jump over 100 kW on average are never
+  confirmed by repetition, by time, by a restart nor by a save of the
+  configuration: they are held (kept with the tariffs in
+  `/data/youless-state.json`, the 0.1.1 `{ last, jump }` state migrated),
+  the last accepted value is sent again and every status shows the value
+  held, connected or not. Only the **Accept the held index** action
+  (`accept_held_index`) takes it, bounded to the value shown plus the margin
+  since (a jump counted once, a drop billed 0); any other value is held
+  again. The margin grows with the time since the last value accepted
+  (2,400 kWh after 24 h of outage). Way out of a dead end: delete the device
+  and create it again.
 - **Errors**: unreachable → retries after 10 s, doubled up to 5 min; refused
   password → every 5 min; a reconnection to Gladys keeps the delay, a save of
   the form ends it. Errors are logged with our own codes, never a text of the

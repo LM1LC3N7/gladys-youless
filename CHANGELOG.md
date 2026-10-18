@@ -10,6 +10,37 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fictitious kWh in the energy monitoring after a drop of the consumption
+  index: version 0.1.1 took a drop after 60 minutes, then a rise back to the
+  real value (or saving the configuration on a held jump) made Gladys count
+  the whole difference as consumption, thousands of kWh at once. A drop and a
+  jump are now held until the user accepts them, never confirmed by time, by
+  repetition, by a restart nor by saving the configuration; while held, the
+  last accepted value is sent again and the status shows the value held,
+  also when the YouLess cannot be read (unreachable, password refused or
+  asked, model changed).
+- With a P1 meter (LS120), both tariffs are checked before their sum: one
+  register falling to 0 or going down alone gives no index for that read
+  instead of a drop.
+- A frozen index no longer shrinks the margin of the next real rise (an
+  unchanged value keeps its date; at a restart the oldest date is kept).
+
+### Added
+
+- "Accept the held index" button (`accept_held_index`) in the configuration:
+  takes exactly the value shown (plus what the home may draw until the next
+  read) and says what will be counted: the jump in kWh, or 0 kWh for a drop.
+  Any other value is held again. Saving the configuration accepts nothing.
+
+### Changed
+
+- The state kept in `/data/youless-state.json` gains the value held (drop or
+  jump) and the P1 tariffs; the jump held by 0.1.1 is migrated and stays
+  held. No configuration key, external id nor feature changes: existing
+  devices and their history are kept.
+
 ## [0.1.1] - 2026-10-17
 
 ### Added

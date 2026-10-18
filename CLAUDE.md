@@ -66,7 +66,10 @@ test/                             node --test, against the SDK's fake Gladys (in
   would price them at the electricity tariff). `power` stays the only
   `energy-sensor` / `power` feature (the energy contracts read the first one).
 - **The billed index passes `IndexGuard`** (`src/guard.js`): a glitch would
-  become a huge consumption.
+  become a huge consumption. A drop or a jump is held, never confirmed by
+  time, repetition, a restart nor a save of the configuration: only the
+  `accept_held_index` action takes it, bounded to the value shown. On the P1
+  path of an LS120 only, `indexOfTariffs` checks both tariffs first.
 - **A secondary page never blocks the main data**: `/f` (phases) failing
   keeps the power and the indexes going.
 - **The password goes to the configured address only**: never log a URL (the
@@ -75,8 +78,9 @@ test/                             node --test, against the SDK's fake Gladys (in
 - **External ids are forever**: `youless:<MAC>` or `youless:host-<address>`,
   the `FEATURE` keys of `src/devices.js`, the manifest keys.
 - **The container rootfs is read-only.** Write only under `/data`, the one
-  writable volume: `src/store.js` keeps the index reference and a jump held
-  in `/data/youless-state.json`.
+  writable volume: `src/store.js` keeps the index reference, the value held
+  and the P1 tariffs in `/data/youless-state.json` (the 0.1.1 `{ last, jump }`
+  is migrated by `IndexGuard`).
 - **Versions belong to the Release workflow** (Actions → Release). Never edit
   `version` in `package.json` or in the manifest, nor the `docker_image` tag,
   by hand — except on the README's hand-pushed tag path, which bumps all three

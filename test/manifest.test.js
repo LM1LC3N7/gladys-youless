@@ -84,7 +84,9 @@ test('the actions of the manifest are the handlers of the code', () => {
     manifest.actions.map((a) => a.key),
     Object.values(ACTIONS),
   );
+  assert.deepEqual(Object.values(ACTIONS), ['test_connection', 'accept_held_index']);
   assert.ok(index.includes('onAction(ACTIONS.TEST'));
+  assert.ok(index.includes('onAction(ACTIONS.ACCEPT_HELD'));
   assert.ok(index.includes('onDeviceCreated'));
   assert.ok(index.includes("on('connected'"));
 });

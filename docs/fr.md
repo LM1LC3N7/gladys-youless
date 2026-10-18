@@ -78,18 +78,36 @@ remplacé le YouLess, supprimez l'ancien appareil).
   entier) :
   - un index à 0 n'est jamais envoyé ; avec un compteur P1, une lecture sans
     données P1 (coupure du câble P1) ne donne aucun index, jamais `net` ;
-  - une **baisse** (compteur remplacé, compteur remis à zéro dans le YouLess)
-    n'est acceptée qu'après 60 minutes de valeurs non nulles et qui ne
-    baissent plus ; la consommation de ces 60 minutes d'attente est perdue
-    (environ 0,6 kWh pour 600 W de moyenne) ;
-  - un **saut vers le haut** (plus de 100 kW en moyenne depuis la dernière
-    valeur) n'est **jamais** accepté tout seul, ni par le temps qui passe ni
-    par un redémarrage : toute valeur égale ou supérieure reste retenue (la
-    retenue est gardée dans `/data`), la dernière valeur acceptée est
-    renvoyée à Gladys, et l'état de l'intégration affiche le saut. S'il est
-    juste, **enregistrez la configuration** de l'intégration : l'index en
-    cours est alors accepté, et la différence est **comptée une fois** comme
-    consommation.
+  - avec un compteur P1 (LS120), les deux tarifs sont vérifiés d'abord : un
+    tarif qui tombe à 0, ou qui baisse alors que l'autre ne baisse pas, est
+    un raté d'un registre : pas d'index pour cette lecture (l'état le
+    signale), jusqu'à ce que les tarifs redeviennent cohérents ;
+  - une **baisse** (compteur remplacé, compteur remis à zéro dans le
+    YouLess) et un **saut vers le haut** (plus de 100 kW en moyenne depuis la
+    dernière valeur) ne sont **jamais** acceptés tout seuls, ni par le temps
+    qui passe, ni par répétition, ni par un redémarrage, ni par
+    l'enregistrement de la configuration : ils sont retenus (la retenue est
+    gardée dans `/data`), la dernière valeur acceptée est renvoyée à Gladys,
+    et l'état de l'intégration affiche la valeur retenue, y compris quand le
+    YouLess ne peut pas être lu. Une valeur qui redevient normale (la baisse
+    ou le saut était un raté) met fin à la retenue, sans rien facturer ;
+  - si la valeur retenue est juste, cliquez sur **Accepter l'index retenu**
+    dans la configuration de l'intégration. Le bouton prend **exactement la
+    valeur affichée** (plus ce que le foyer peut consommer d'ici la lecture
+    suivante) : un **saut** est alors **compté une fois** comme consommation
+    (le bouton indique combien de kWh), une **baisse** ne facture rien et la
+    consommation repart de là. Toute autre valeur lue ensuite est de nouveau
+    retenue. N'acceptez un saut que si cette énergie a vraiment été
+    consommée ;
+  - la marge grandit avec le temps écoulé depuis la dernière valeur acceptée
+    (100 kW en moyenne) : après une **longue panne** (YouLess éteint, réseau
+    coupé), une forte hausse peut passer d'un coup, jusqu'à 2 400 kWh après
+    24 heures ;
+  - **sortie en cas d'impasse** : si l'index reste retenu ou absent pour de
+    bon (un nouveau compteur dont un registre reste à 0, par exemple),
+    supprimez l'appareil YouLess dans Gladys et recréez-le depuis l'onglet
+    Découverte : sa référence repart de l'index actuel (l'historique de
+    l'ancien appareil est perdu).
 - **Mot de passe refusé par la page des phases** : elle est laissée de côté
   5 minutes, sans nouvelle connexion ; le reste continue.
 - Le gaz et l'eau d'un relevé de plus de 26 h sont ignorés (le YouLess garde

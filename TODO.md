@@ -109,31 +109,55 @@
 - **Created devices**: read from `gladys.devices` only (the SDK upserts it
   on creation and update, removes it on deletion); no Map of our own.
   `onDeviceUpdated` publishes the values of the new features at once.
-- **Index plausibility** (review, `src/guard.js`): the core skips a negative
-  delta but counts every rise in full, so 9,194 → 0 → 9,194 would bill
-  9,194 kWh. Rules: (a) once P1 values were seen (read, or the tariff
-  features of the created device), a read without them gives no index at
-  all, never `net`; (b) 0 is never published, not even as a first reference;
-  (c) a drop is taken only after 60 min of non-zero, non-decreasing values
-  (a 0 or a lower value restarts the wait); (d) a jump over 100 kW on average
-  (+ 0.5 kWh) is never confirmed by repetition: held, shown in the status
-  (fr/en), accepted only by an explicit gesture, a save of the configuration
-  (`start(…, { fresh: true })`): the current index is then published and the
-  difference counted once (documented); a reconnection never accepts it;
-  (e) the guard starts again at `onDeviceCreated` (its /data entry removed).
-  The value checked is the one published (3 decimals).
-- **Jump held** (approval round 1): the margin (100 kW × hours since the
-  last value published) grows while nothing is published, so it would end up
-  covering the jump. While a jump is held and not accepted, every value at
-  or above it (`threshold`, the lowest jump seen) stays held whatever the
-  time; only a value below it goes through the usual rule. Kept across
-  restarts in `/data/youless-state.json` (reference + jump, written through a
-  temporary file, only when they change; a failure is logged, not fatal);
-  the most recent reference of /data and of Gladys (`last_value`,
-  `last_value_changed`) wins. While held, the last accepted value is sent
-  again (no delta for the core, its date kept recent by the 10-minute
-  heartbeat). A confirmed drop loses the consumption of its 60 minutes of
-  waiting (documented).
+- **Index plausibility** (`src/guard.js`, fixed after 0.1.1, ported from
+  gladys-p1-monitor b110655): the core skips a negative delta but counts
+  every rise in full, so 9,194 → 0 → 9,194, and 9,194 → 10 (a drop taken)
+  → 9,194, would bill 9,184 kWh or more. 0.1.1 took a drop after 60 minutes
+  and accepted a held jump on a save of the configuration: both removed.
+  Rules:
+  - (a) once P1 values were seen (read, or the tariff features of the
+    created device), a read without them gives no index at all, never
+    `net` (`p1Known`, `p1Outage` unchanged);
+  - (b) `indexOfTariffs`, ONLY on the P1 path of an LS120 (`p1`, `p2`;
+    never `cnt` of the LS110 / PVOutput, never `net`): both tariffs present,
+    finite, at or above 0, their sum above 0; against the tariffs `{ p1, p2
+}` of the last index accepted (kept in /data with the guard, never
+    cleared by a save, cleared by `onDeviceCreated`), both lower is a real
+    drop for the guard; otherwise a tariff above 0 that reads 0, or one
+    lower alone, gives no index for that read (status note). A tariff at 0
+    is accepted when it already was 0 or with no reference (single-tariff
+    meter);
+  - (c) 0 is never published; a value plausible after the reference (not
+    lower, at most 100 kW on average + 0.5 kWh) goes through; a value EQUAL
+    to the reference goes through without moving its date; at a restart,
+    the same value in /data and in Gladys keeps the OLDEST date, otherwise
+    the most recent reference wins;
+  - (d) a drop and a jump up are held (`held = { direction, from, to,
+threshold, at }`), never confirmed by repetition, by time, by a restart
+    nor by a save; every value at or above a held jump stays held; the last
+    accepted value is sent again; the held note is in EVERY status
+    (connected, unreachable, password refused or asked, downgrade); a value
+    back to the usual rule ends the hold;
+  - (e) only the `accept_held_index` action accepts: the value shown
+    (`held.to` read at `held.at`), a jump for `held.to ≤ v ≤ held.to + 100
+kW × (at − held.at) + 0.5 kWh`, a drop for `v ≤ held.to + margin`; any
+    other value is held again and the acceptance dropped. An acceptance is
+    not kept in /data. A value held read back from /data is dated at its
+    loading (never its old date, which would widen the range);
+  - (f) migration: the 0.1.1 `{ last, jump: { from, to, threshold } }` of
+    `/data/youless-state.json` is read as `held` with `direction: 'up'`,
+    `at` = load time; written in the new shape `{ last, held, tariffs }` at
+    the next save. Tested with a `last.at` six days old;
+  - (g) the guard starts again at `onDeviceCreated` (its /data entry, the
+    guard, the tariffs and the saved key reset after the save); `doStart`
+    resets the guard and the tariff reference when the address or the
+    password changes. Way out of a dead end (a register stuck in a state
+    that gives no index): delete the device and create it again;
+  - (h) the margin grows with the time since the last value accepted: after
+    24 h of outage, up to 2,400 kWh pass at once (documented).
+    The value checked is the one published (3 decimals). /data is written
+    through a temporary file, only when the reference, the hold or the
+    tariffs change; a failure is logged, not fatal.
 - **Pace**: one timer every 10 s; the indexes (and gas, water, tariff, S0
   index) are published when 60 s have passed; `publishChangedStates` with a
   10-minute heartbeat. At most about 70 states a minute with three phases,

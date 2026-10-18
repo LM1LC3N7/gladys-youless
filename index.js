@@ -22,6 +22,8 @@ gladys.onDeviceUpdated((device) => app.onDeviceUpdated(device));
 
 // --- Configuration screen button ----------------------------------------------
 gladys.onAction(ACTIONS.TEST, () => app.testConnection());
+// The only way to take a consumption index held back (a save of the form never does).
+gladys.onAction(ACTIONS.ACCEPT_HELD, () => app.acceptHeldIndex());
 
 // --- Configuration changed by the user ----------------------------------------
 gladys.onConfigUpdated((config) => {

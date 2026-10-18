@@ -13,7 +13,8 @@
 //
 // A snapshot holds only what the device gave (a missing value is undefined):
 //   { power, consumption: { total, t1, t2 }, injection: { total, t1, t2 },
-//     s0: { power, index }, gas, water, phases: [{ power, voltage, current }], tariff }
+//     s0: { power, index }, gas, water, phases: [{ power, voltage, current }], tariff,
+//     p1Meter (the index comes from the P1 tariffs), p1Outage }
 // -----------------------------------------------------------------------------
 
 import { METER_STALE_AFTER, PHASES_FIRMWARE } from '../constants.js';
@@ -149,6 +150,8 @@ export function parseEnelogic(json, now, { p1Known = false } = {}) {
     phases: [],
   };
   if (p1Meter) {
+    // The P1 path: the app checks both tariffs (src/guard.js indexOfTariffs).
+    snapshot.p1Meter = true;
     snapshot.consumption = { total: sum(p1, p2), t1: p1, t2: p2 };
     snapshot.injection = { total: sum(n1, n2), t1: n1, t2: n2 };
   } else if (p1Known) {
