@@ -758,3 +758,80 @@ test('the LS110 index (cnt) never goes through the P1 tariff check', async () =>
   assert.equal(app.tariffRef, undefined);
   assert.doesNotMatch(status(gladys).message.fr, /tarifs P1/);
 });
+
+test('while a value is held, a migrated old reference never bills a large rise', async () => {
+  const DAY = 24 * 60 * MINUTE;
+  const store = createMemoryStore();
+  await store.save({
+    [F('consumption_index')]: {
+      last: { value: 9194.193, at: NOW - 5 * DAY },
+      jump: { from: 9194.193, to: 15000, threshold: 15000 },
+    },
+  });
+  const routes = ls120Routes();
+  // 14000 kWh: below the threshold, within 5 days of margin from the old reference.
+  enelogic(routes, { p1: 9509.369 });
+  const { app, gladys, tick } = await setup({ routes, devices: [createdLs120()], store });
+  await app.start(CONFIG);
+  await app.idle();
+  await tick(MINUTE);
+  assert.ok(!indexes(gladys).includes(14000));
+  assert.equal(billed(gladys), 0);
+  assert.match(status(gladys).message.fr, /sauté de 9194.193 à 14000 kWh/);
+  assert.match(status(gladys).message.fr, /4805.807 kWh seront comptés/);
+});
+
+test('P1 tariff counters: not sent without an index, never 0 after a value above 0', async () => {
+  const routes = ls120Routes();
+  const { app, gladys, tick } = await setup({ routes, devices: [createdLs120()] });
+  await app.start(CONFIG);
+  await app.idle();
+  const t2 = () => published(gladys, 'consumption_tariff2').map((s) => s.state);
+  assert.deepEqual(t2(), [4490.631]);
+  // One register at 0: no index, so no tariff counter either.
+  enelogic(routes, { p2: 0 });
+  for (let i = 0; i < 15; i += 1) {
+    await tick(MINUTE);
+  }
+  assert.deepEqual(distinct(t2()), [4490.631]);
+  // Both lower, one at 0: a drop for the guard (an index exists, held), yet
+  // the counter at 0 is never sent after a value above 0.
+  enelogic(routes, { p1: 3, p2: 0 });
+  await tick(MINUTE);
+  assert.match(status(gladys).message.fr, /a baissé/);
+  assert.ok(!t2().includes(0), 'never 0 after a value above 0');
+  assert.ok(published(gladys, 'consumption_tariff1').every((s) => s.state > 0));
+  // A single-tariff meter (p2 always 0) still gets its counters.
+  const single = await setup({
+    routes: ls120Routes({ '/e': () => json([{ ...ENELOGIC[0], p2: 0 }]) }),
+    devices: [createdLs120()],
+  });
+  await single.app.start(CONFIG);
+  await single.app.idle();
+  assert.deepEqual(
+    single.gladys.fake.states
+      .filter((s) => s.device_feature_external_id === F('consumption_tariff2'))
+      .map((s) => s.state),
+    [0],
+  );
+});
+
+test('the held index shows in the "no address" and "invalid address" statuses', async () => {
+  for (const [config, pattern] of [
+    [{}, /Saisissez l’adresse.*sauté de 9194.193 à 14194.193 kWh/],
+    [{ address: 'bad host' }, /pas valide.*sauté de 9194.193 à 14194.193 kWh/],
+  ]) {
+    const store = createMemoryStore();
+    await store.save({
+      [F('consumption_index')]: {
+        last: { value: 9194.193, at: NOW - MINUTE },
+        held: { direction: 'up', from: 9194.193, to: 14194.193, threshold: 14194.193, at: 0 },
+      },
+    });
+    const { app, gladys } = await setup({ config, devices: [createdLs120()], store });
+    await app.start(config);
+    await app.idle();
+    assert.equal(status(gladys).connected, false);
+    assert.match(status(gladys).message.fr, pattern);
+  }
+});

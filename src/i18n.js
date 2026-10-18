@@ -27,7 +27,7 @@ export function reason(err) {
 }
 
 /** A message followed by notes (an index held back), each a { en, fr } text. */
-const withNotes = (message, notes = []) => ({
+export const withNotes = (message, notes = []) => ({
   en: [message.en, ...notes.map((n) => n.en)].join(' '),
   fr: [message.fr, ...notes.map((n) => n.fr)].join(' '),
 });

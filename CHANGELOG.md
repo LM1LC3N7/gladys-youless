@@ -24,6 +24,14 @@ the notes of the version's GitHub Release.
 - With a P1 meter (LS120), both tariffs are checked before their sum: one
   register falling to 0 or going down alone gives no index for that read
   instead of a drop.
+- While a value is held, the margin of the usual rule counts from the last
+  value held, never from an old reference (a long outage, a state migrated
+  from 0.1.1): a large rise below the value held is held in its turn, with
+  its kWh shown, and nothing is billed until the user accepts it.
+- The P1 tariff counters are no longer sent when the tariffs give no index,
+  and never at 0 after a value above 0.
+- The value held is also shown in the "no address" and "invalid address"
+  statuses.
 - A frozen index no longer shrinks the margin of the next real rise (an
   unchanged value keeps its date; at a restart the oldest date is kept).
 

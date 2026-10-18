@@ -34,7 +34,7 @@ import {
 } from './devices.js';
 import { IndexGuard, indexOfTariffs } from './guard.js';
 import { createFileStore } from './store.js';
-import { T } from './i18n.js';
+import { T, withNotes } from './i18n.js';
 import { YoulessClient, YoulessError } from './youless/client.js';
 import { bringsNew, capabilitiesOf, mergeCapabilities } from './youless/model.js';
 
@@ -91,6 +91,8 @@ export class YoulessApp {
     this.tariffRef = undefined;
     /** The last check of the P1 tariffs gave no index (a register glitching). */
     this.indexUndefined = false;
+    /** The P1 tariff counters last sent, by feature id (never 0 after a value above 0). */
+    this.publishedTariffs = new Map();
     this.lastIndexAt = 0;
     /** Retries: kept across reconnections to Gladys, reset by a save of the form. */
     this.failures = 0;
@@ -152,6 +154,7 @@ export class YoulessApp {
       this.savedGuard = undefined;
       this.tariffRef = undefined;
       this.indexUndefined = false;
+      this.publishedTariffs.clear();
       this.failures = 0;
       this.nextTryAt = 0;
       this.unknownAnswers = 0;
@@ -161,7 +164,9 @@ export class YoulessApp {
       this.nextTryAt = 0;
     }
     if (!config.address) {
-      await this.setStatus(false, config.invalidAddress ? T.badAddress : T.noAddress);
+      // The index held back stays shown here too.
+      const message = config.invalidAddress ? T.badAddress : T.noAddress;
+      await this.setStatus(false, withNotes(message, this.heldNotes()));
       return;
     }
     // Every start (a reconnection to Gladys included) publishes everything
@@ -279,6 +284,7 @@ export class YoulessApp {
       this.savedGuard = undefined;
       this.tariffRef = undefined;
       this.indexUndefined = false;
+      this.publishedTariffs.clear();
       this.lastIndexAt = 0;
       await this.run(this.generation, () => this.tick());
     }
@@ -486,7 +492,16 @@ export class YoulessApp {
       // While a value is held, the last accepted one is sent again (no delta
       // for the core; the heartbeat keeps its date recent in Gladys).
       const held = guard.held ? guard.last?.value : undefined;
-      states.push(...indexStates(external, snapshot, plausible ? total : held));
+      const tariffIds = new Set(
+        [FEATURE.CONSUMPTION_T1, FEATURE.CONSUMPTION_T2].map((key) => external.feature(key)),
+      );
+      for (const state of indexStates(external, snapshot, plausible ? total : held)) {
+        const id = state.device_feature_external_id;
+        if (tariffIds.has(id) && !this.tariffStateAllowed(created, id, state.state, sum)) {
+          continue;
+        }
+        states.push(state);
+      }
     }
     // Only the features the created device has (they are fixed at its creation).
     const features = created.features ? new Set(created.features.map((f) => f.external_id)) : null;
@@ -499,6 +514,23 @@ export class YoulessApp {
     await this.gladys
       .publishChangedStates(allowed, { heartbeat: STATE_HEARTBEAT })
       .catch((err) => this.logger.warn(`Publishing the YouLess values failed: ${err.message}`));
+  }
+
+  /**
+   * A P1 tariff counter (plain sensor): not sent when the tariffs give no
+   * index (a register glitching), and never 0 after a value above 0 (sent
+   * by us, or held by Gladys).
+   */
+  tariffStateAllowed(created, id, value, sum) {
+    if (sum === undefined) {
+      return false;
+    }
+    const before = this.publishedTariffs.get(id) ?? lastValueOf(created, id)?.value;
+    if (value === 0 && before > 0) {
+      return false;
+    }
+    this.publishedTariffs.set(id, value);
+    return true;
   }
 
   /** Keeps the guard in /data when its reference, its value held or the tariffs changed. */

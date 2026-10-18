@@ -91,6 +91,9 @@ remplacé le YouLess, supprimez l'ancien appareil).
     et l'état de l'intégration affiche la valeur retenue, y compris quand le
     YouLess ne peut pas être lu. Une valeur qui redevient normale (la baisse
     ou le saut était un raté) met fin à la retenue, sans rien facturer ;
+    tant qu'une valeur est retenue, « normale » veut dire proche de la
+    dernière valeur acceptée depuis la lecture précédente : une forte hausse
+    est alors retenue à son tour (ses kWh affichés) au lieu d'être facturée ;
   - si la valeur retenue est juste, cliquez sur **Accepter l'index retenu**
     dans la configuration de l'intégration. Le bouton prend **exactement la
     valeur affichée** (plus ce que le foyer peut consommer d'ici la lecture

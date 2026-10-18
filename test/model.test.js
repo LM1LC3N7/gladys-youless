@@ -496,3 +496,32 @@ test('the /data store: written through a temporary file, read back, empty when a
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('index guard: while held, an old reference never lets a large rise through', () => {
+  const DAY = 24 * 60 * MINUTE;
+  // Migrated from 0.1.1: the reference 5 days old, a jump to 15000 held.
+  const old = {
+    last: { value: 9000, at: 0 },
+    jump: { from: 9000, to: 15000, threshold: 15000 },
+  };
+  const loadedAt = 5 * DAY;
+  const guard = new IndexGuard(undefined, old, loadedAt);
+  // 14000: below the threshold, within 5 days of margin from last.at, but
+  // not within the short margin since held.at: held in its turn.
+  assert.equal(guard.accept(14000, loadedAt + MINUTE), false);
+  assert.deepEqual(guard.last, { value: 9000, at: 0 }, '0 kWh billed');
+  assert.deepEqual(guard.held, {
+    direction: 'up',
+    from: 9000,
+    to: 14000,
+    threshold: 14000,
+    at: loadedAt + MINUTE,
+  });
+  // The real consumption stays acceptable by the button.
+  assert.deepEqual(guard.acceptHeld(), { direction: 'up', from: 9000, to: 14000 });
+  assert.equal(guard.accept(14000.1, loadedAt + 2 * MINUTE), true);
+  // A small rise right after the held value still ends the hold (a glitch).
+  const glitch = new IndexGuard(undefined, old, loadedAt);
+  assert.equal(glitch.accept(9000.5, loadedAt + MINUTE), true);
+  assert.equal(glitch.held, undefined);
+});

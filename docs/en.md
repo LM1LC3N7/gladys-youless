@@ -84,7 +84,9 @@ integration tries again (if you replaced the YouLess, delete the old device).
     kept in `/data`), the last accepted value is sent to Gladys again, and the
     integration status shows the value held, also while the YouLess cannot be
     read. A value back to normal (the drop or the jump was a glitch) ends the
-    hold, without billing anything;
+    hold, without billing anything; while a value is held, "normal" means
+    close to the last accepted value since the last read, so a large rise is
+    held in its turn (its kWh shown) rather than billed;
   - if the value held is right, click **Accept the held index** in the
     configuration of the integration. It takes **exactly the value shown**
     (plus what the home may draw until the next read): a **jump** is then

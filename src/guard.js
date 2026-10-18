@@ -23,7 +23,10 @@
 // - while a jump is held, every value at or above it stays held: the margin
 //   growing while nothing is published must never cover it;
 // - a value back to the usual rule (the drop or the jump was a glitch) ends
-//   the hold.
+//   the hold; while a value is held, that rule counts its margin from the
+//   last value held (`held.at`), so an old reference (a long outage, a state
+//   migrated from 0.1.1) never lets a large rise through: it is held in its
+//   turn, with its kWh shown, for the user to accept.
 //
 // `indexOfTariffs` checks the two P1 tariffs of an LS120 before their sum
 // reaches the guard: a tariff that was above 0 and reads 0, or that drops
@@ -187,7 +190,13 @@ export class IndexGuard {
       this.held = { ...this.held, to: value, at };
       return false;
     }
-    if (follows(this.last, value, at)) {
+    // While a value is held, the margin counts from the last value held
+    // (`held.at`), never from an old reference: a value below the threshold
+    // that does not fit this short margin is held in its turn (its kWh shown).
+    const reference = this.held
+      ? { value: this.last.value, at: Math.max(this.last.at, this.held.at) }
+      : this.last;
+    if (follows(reference, value, at)) {
       return this.take(value, at);
     }
     const direction = value > this.last.value ? 'up' : 'down';
