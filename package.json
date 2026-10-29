@@ -1,6 +1,6 @@
 {
   "name": "gladys-youless",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "YouLess (LS110, LS120) for Gladys Assistant: the local energy monitor read on the home network, its power and electricity index fed to the energy monitoring, tariffs, injection, phases, gas and water as sensors.",
   "type": "module",
